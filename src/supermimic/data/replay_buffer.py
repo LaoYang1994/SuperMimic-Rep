@@ -3,9 +3,11 @@
 Each row holds the state ``s_t`` at the start of a control step together with the
 transition that followed it: clean action ``a_t``, executed action ``a_exec_t``, sim
 context ``xi_t``, reward ``r_{t+1}``, the target frame/clip of that step and bookkeeping
-flags. When an episode ends an extra *terminal* row is written that holds ``s_{T+1}``
-(no transition out of it) and the termination label of that state, so k-step windows
-can use it as their last target state and the termination head gets positive labels.
+flags. ``r`` and ``done`` are both labels of that same transition ``(s_t, a_t) -> s_{t+1}``:
+``done`` is the termination label of ``s_{t+1}`` (1 only for real terminations; time-limit
+truncations leave it 0). When an episode ends an extra *terminal* row is written that holds
+``s_{T+1}`` so k-step windows can use it as their last target state; no transition leaves it,
+so it carries no labels (the label of ``s_{T+1}`` is on the last transition row).
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ class WindowBatch:
     a_clean: torch.Tensor  # (k, n, A)
     xi: torch.Tensor  # (n, X) context at the window start (constant inside an episode)
     reward: torch.Tensor  # (k, n)
-    done: torch.Tensor  # (k, n) termination label of states 1..k
+    done: torch.Tensor  # (k, n) termination label of the result of transition j (= of states[j + 1])
     frame: torch.Tensor  # (k, n) target frame of each transition
 
 
@@ -132,7 +134,7 @@ class ReplayBuffer:
             a_clean=self.a[ee[:-1], tt[:-1]],
             xi=self.xi[e, t],
             reward=self.r[ee[:-1], tt[:-1]],
-            done=self.done[ee[1:], tt[1:]],
+            done=self.done[ee[:-1], tt[:-1]],  # same rows as the reward: labels of transitions 0..k-1
             frame=self.frame[ee[:-1], tt[:-1]],
         )
 

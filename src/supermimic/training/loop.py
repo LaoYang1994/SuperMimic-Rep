@@ -200,7 +200,8 @@ class Trainer:
         last_log = time.time()
 
         t0 = time.perf_counter()
-        while self.sim_steps < sch.warmup_sim_steps:
+        # Counted per run: the replay buffer is not checkpointed, so a resumed run must refill it too.
+        for _ in range(sch.warmup_sim_steps):
             obs = self._collect(obs, stats)
         torch.cuda.synchronize()
         timers["sim"] += time.perf_counter() - t0

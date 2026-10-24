@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-from mjlab.utils.lab_api.math import quat_apply, quat_box_minus, quat_inv, quat_mul, yaw_quat
+from mjlab.utils.lab_api.math import quat_apply, quat_conjugate, quat_inv, quat_mul, yaw_quat
 
 
 @dataclass
@@ -66,9 +66,28 @@ def reanchor_reference(
     return rel_pos, rel_quat
 
 
+def _quat_box_minus(q1: torch.Tensor, q2: torch.Tensor, eps: float = 1.0e-6) -> torch.Tensor:
+    """mjlab's ``quat_box_minus`` (axis-angle of q1 * q2^-1) with a finite gradient at zero angle.
+
+    Forward-identical to mjlab (mjlab commit 8bb2bc9: same sign fold, ``atan2`` half angle, Taylor
+    threshold and formula). mjlab's ``torch.where(angle > eps, sin(half) / angle, taylor)`` evaluates
+    ``sin(0) / 0`` in the discarded branch at zero angle, and ``where`` still back-propagates that NaN;
+    here the discarded branch divides by 1 instead.
+    """
+    quat = quat_mul(q1, quat_conjugate(q2))
+    quat = quat * (1.0 - 2.0 * (quat[..., 0:1] < 0.0))
+    mag = torch.linalg.norm(quat[..., 1:], dim=-1)
+    half_angle = torch.atan2(mag, quat[..., 0])
+    angle = 2.0 * half_angle
+    large = angle.abs() > eps
+    safe_angle = torch.where(large, angle, torch.ones_like(angle))
+    sin_half_over_angle = torch.where(large, torch.sin(half_angle) / safe_angle, 0.5 - angle * angle / 48)
+    return quat[..., 1:4] / sin_half_over_angle.unsqueeze(-1)
+
+
 def _sq_quat_err(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
     """Squared geodesic angle between quaternions, smooth at zero (== quat_error_magnitude**2)."""
-    v = quat_box_minus(q1, q2)
+    v = _quat_box_minus(q1, q2)
     return (v * v).sum(-1)
 
 

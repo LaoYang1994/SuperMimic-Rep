@@ -5,8 +5,9 @@ Hook usage (see ``mjlab/managers/recorder_manager.py``):
 * ``record_post_reset(ids)``  fresh episode start: remember s_0, xi, target frame.
 * ``record_post_step()``      for envs that did not reset: write row (s_t, a_t, a_exec, xi, r, ...),
                               then remember s_{t+1} as the next row's state.
-* ``record_pre_reset(ids)``   terminal step: write the last transition row plus a *terminal* row
-                              holding s_{T+1} with its termination label; qpos/qvel are final here
+* ``record_pre_reset(ids)``   terminal step: write the last transition row (its ``done`` is the
+                              termination label of s_{T+1}) plus a *terminal* row holding s_{T+1}
+                              as the last window target, with no labels; qpos/qvel are final here
                               even though derived kinematics are one substep stale.
 """
 
@@ -88,7 +89,8 @@ class ReplayRecorder(RecorderTerm):
         env = self._env
         terminated = env.reset_terminated[env_ids].float()
         self._write_rows(env_ids, terminated)
-        # Terminal row: the state reached by the last action (no transition out of it).
+        # Terminal row: the state reached by the last action. No transition leaves it, so it carries no
+        # reward/done labels (the termination label of s_{T+1} is on the transition row just written).
         cmd = self.command
         s_next = self.state_io.read()[env_ids]
         zeros_a = torch.zeros(env_ids.numel(), 29, device=env.device)
@@ -99,7 +101,7 @@ class ReplayRecorder(RecorderTerm):
             a_exec=zeros_a,
             xi=self.prev_xi[env_ids],
             r=torch.zeros(env_ids.numel(), device=env.device),
-            done=terminated,
+            done=torch.zeros(env_ids.numel(), device=env.device),
             frame=cmd.frame[env_ids],
             clip=cmd.library.frame_clip[cmd.frame[env_ids]],
             terminal=torch.ones(env_ids.numel(), dtype=torch.bool, device=env.device),
