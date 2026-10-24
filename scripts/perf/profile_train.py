@@ -55,6 +55,30 @@ for _ in range(sch.warmup_sim_steps):
 
 phase = ""
 
+# Sub-phases (profiler annotations only, no change to the computation): imagination rollout and every
+# backward pass get their own range; the rest of a phase (WM forward, critic fit, optimizer steps, metrics)
+# stays attributed to the enclosing phase.
+import supermimic.imagination.policy_trainer as _pt
+
+_imagine = _pt.imagine
+
+
+def _imagine_annotated(*args, **kw):
+    with record_function("phase/policy.imagine"):
+        return _imagine(*args, **kw)
+
+
+_pt.imagine = _imagine_annotated
+_backward = torch.Tensor.backward
+
+
+def _backward_annotated(self, *args, **kw):
+    with record_function(f"phase/{phase}.backward"):
+        return _backward(self, *args, **kw)
+
+
+torch.Tensor.backward = _backward_annotated
+
 
 def iteration():
     global obs, phase
@@ -153,14 +177,23 @@ starts = [r[0] for r in ranges]
 
 
 def phase_of(t):
+    # Innermost range containing t: ranges nest, so walk back from the latest start until one contains t.
     i = bisect.bisect_right(starts, t) - 1
-    return ranges[i][2] if i >= 0 and t <= ranges[i][1] else "other"
+    while i >= 0:
+        if t <= ranges[i][1]:
+            return ranges[i][2]
+        i -= 1
+    return "other"
 
 
 per_phase = {}
+ops_per_phase = {}  # top-level aten ops (no aten parent) by call count, per innermost phase
 for e in events:
     if e.device_type != torch.autograd.DeviceType.CPU:
         continue
+    if e.name.startswith("aten::") and not (e.cpu_parent is not None and e.cpu_parent.name.startswith("aten::")):
+        d = ops_per_phase.setdefault(phase_of(e.time_range.start), {})
+        d[e.name] = d.get(e.name, 0) + 1
     key = None
     if e.name in ("aten::item", "cudaStreamSynchronize", "cudaMemcpyAsync"):
         key = e.name
@@ -183,6 +216,7 @@ summary = {
     "phase_ms_per_iter": {k: v / a.active * 1000 for k, v in phase.items()},
     "per_phase_counts_per_iter": {ph: {k: v / a.active for k, v in d.items()} for ph, d in per_phase.items()},
     "gpu_kernel_ms_per_iter": busy_s / a.active * 1000,
+    "top_ops_per_phase_per_iter": {ph: dict(sorted(((k, v / a.active) for k, v in d.items()), key=lambda kv: -kv[1])[:15]) for ph, d in ops_per_phase.items()},
 }
 if a.sync_stacks:
     top = sorted(sync_sites.items(), key=lambda kv: -kv[1])

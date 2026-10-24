@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import torch
 
-from supermimic.world_model.heads import ReferenceFrame, analytic_observation
+from supermimic.imagination.goals import ANCHOR_NOISE_HALF, OBS_NOISE_HALF, goal_from_static
+from supermimic.world_model.heads import ReferenceFrame, analytic_observation, flatten_history_term_major
 from supermimic.world_model.world_model import WorldModel
 
 REWARD_TERM_NAMES = (
@@ -49,3 +50,43 @@ class ImagStep:
 
     def __call__(self, s, a, a_prev, xi, ref: ReferenceFrame):
         return self._fn(s, a, a_prev, xi, ref.body_pos_w, ref.body_quat_w, ref.body_lin_vel_w, ref.body_ang_vel_w, ref.root_pos_w, ref.root_quat_w)
+
+
+def _ref_tensors(ref: ReferenceFrame) -> tuple[torch.Tensor, ...]:
+    return ref.body_pos_w, ref.body_quat_w, ref.body_lin_vel_w, ref.body_ang_vel_w, ref.root_pos_w, ref.root_quat_w
+
+
+class ImagRolloutStep:
+    """A whole imagined step as one compiled call: observation history -> policy -> world-model step, reward,
+    termination and survival -> next (noisy) observation history, next goal and critic root-error features.
+
+    Only the world-model part used to be compiled; the policy MLP, goal and history handling ran eagerly as
+    ~1,300 kernel launches per step (forward + backward). Frame-only goal inputs and the uniform noise samples
+    are prepared outside (``imagine``), so the graph has static shapes and no random-number generation.
+    """
+
+    def __init__(self, wm: WorldModel, policy: torch.nn.Module, default_joint_pos: torch.Tensor, obs_mode: str, compile_mode: str | None = None):
+        self.wm, self.policy, self.obs_mode = wm, policy, obs_mode
+        self.core = ImagStep(wm, default_joint_pos)  # eager body; compiled as part of this step
+        dev = default_joint_pos.device
+        self.noise_half = OBS_NOISE_HALF.to(dev)
+        self.anchor_noise_half = ANCHOR_NOISE_HALF.to(dev)
+        self._fn = self._step
+        if compile_mode:
+            mode = None if compile_mode == "default" else compile_mode
+            self._fn = torch.compile(self._step, mode=mode, dynamic=False)
+
+    def _step(self, s, a_prev, hist, goal, c, xi, ref_t, u_obs, goal_next_static, ref_next, u_goal):
+        a = self.policy(flatten_history_term_major(hist), goal)
+        s_next, r, term_vec, logits, obs_clean, anchor_pose = self.core._step(s, a, a_prev, xi, *ref_t)
+        d = torch.sigmoid(logits)
+        c_next = c * (1.0 - d)
+        o = obs_clean if u_obs is None else obs_clean + (u_obs * 2 - 1) * self.noise_half
+        hist_next = torch.cat([hist[1:], o[None]], dim=0)
+        goal_next = goal_from_static(self.obs_mode, goal_next_static, anchor_pose, u_goal, self.anchor_noise_half)
+        ref_n = ReferenceFrame(*ref_next)
+        e_root_next = self.wm.heads.root_error_features(s_next, ref_n)
+        return a, s_next, r, term_vec.detach().mean(-1), d, c_next, hist_next, goal_next, e_root_next
+
+    def __call__(self, s, a_prev, hist, goal, c, xi, ref_t: ReferenceFrame, u_obs, goal_next_static, ref_next: ReferenceFrame, u_goal):
+        return self._fn(s, a_prev, hist, goal, c, xi, _ref_tensors(ref_t), u_obs, goal_next_static, _ref_tensors(ref_next), u_goal)

@@ -71,9 +71,9 @@ class PolicyTrainer:
         # fused: see WorldModelTrainer.
         self.opt = torch.optim.Adam(policy.parameters(), lr=cfg.lr, betas=cfg.betas, fused=True)
         self.critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr, fused=True)
-        from supermimic.imagination.compiled import ImagStep
+        from supermimic.imagination.compiled import ImagRolloutStep
 
-        self.step_fn = ImagStep(wm, lib.default_joint_pos, compile_mode=cfg.compile)
+        self.step_fn = ImagRolloutStep(wm, policy, lib.default_joint_pos, cfg.obs_mode, compile_mode=cfg.compile)
 
     def set_lr(self, lr: float) -> None:
         for g in self.opt.param_groups:
