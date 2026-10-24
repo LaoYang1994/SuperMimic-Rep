@@ -13,3 +13,6 @@ wandb/
 .pytest_cache/
 .ruff_cache/
 experiments/**/outputs/
+
+# local scratch (never commit)
+/tmp/

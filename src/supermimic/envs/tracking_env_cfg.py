@@ -1,13 +1,14 @@
 """SuperMimic tracking environment on mjlab (plan Phase 2.3).
 
 Differences from mjlab's BeyondMimic re-implementation (``mjlab.tasks.tracking``):
-  * observations: paper Table A.1 proprioception only (no anchor pose, no base lin vel),
-    10-frame history (term-major), plus a separate ``goal`` group with K future frames;
+  * observations: paper Table A.1 proprioception only (no anchor position, no base lin vel),
+    10-frame history (term-major), plus a separate ``goal`` group with K future frames whose content
+    depends on ``obs_mode`` (docs/CONCEPTS.md#观测口径);
   * action: ``NoisyJointPositionAction`` (clean action observed, noise only executed);
   * multi-clip command with return-based reset sampling and clip-end time-outs;
   * rewards: self-collision term removed, joint-limit weight -2;
   * terminations: pelvis height / tilt vs reference, no end-effector term, clip-end time-out;
-  * events: no push; friction and encoder bias re-sampled per episode; COM at startup;
+  * events: no push; COM offset, encoder bias and foot friction sampled at startup (as mjlab);
   * a ``ReplayRecorder`` streams transitions into a GPU replay buffer.
 """
 
@@ -87,9 +88,24 @@ class SuperMimicEnvCfgArgs:
     joint_limit_weight: float = -2.0
     bin_frames: int = 50
     compact_library: bool = False
-    anchor_obs: bool = False  # add BeyondMimic anchor-relative pose (9) to the goal group (plan D5 alt.)
+    obs_mode: str = "beyondmimic_seq"  # config.ObsMode: goal-group content (see policy.nets.goal_layout)
     debug_vis: bool = False  # draw the reference ghost in the viewer (scripts/play.py)
     extra_command_kwargs: dict = field(default_factory=dict)
+
+
+def _goal_terms(a: SuperMimicEnvCfgArgs, noise) -> dict[str, ObservationTermCfg]:
+    """Goal group per obs_mode, in policy.nets.goal_layout order. Anchor-pose noise as mjlab's tracking task."""
+    if a.obs_mode == "beyondmimic_seq":
+        ori_noise = 0.05 if a.obs_noise else 0.0
+        return {"beyondmimic_seq": ObservationTermCfg(func=sm_obs.goal_beyondmimic_seq, params={"command_name": "motion", "ori_noise": ori_noise})}
+    terms = {"future_frames": ObservationTermCfg(func=sm_obs.goal_future_frames, params={"command_name": "motion"})}
+    if a.obs_mode == "anchor_pose9":
+        terms["anchor_pos"] = ObservationTermCfg(func=track_mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=noise(-0.25, 0.25))
+    if a.obs_mode in ("anchor_pose9", "anchor_ori_now"):
+        terms["anchor_ori"] = ObservationTermCfg(func=track_mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=noise(-0.05, 0.05))
+    elif a.obs_mode != "proprio_only":
+        raise ValueError(f"unknown obs_mode {a.obs_mode!r}")
+    return terms
 
 
 def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
@@ -111,17 +127,7 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
             flatten_history_dim=True,
         ),
         "goal": ObservationGroupCfg(
-            terms={
-                "future_frames": ObservationTermCfg(func=sm_obs.goal_future_frames, params={"command_name": "motion"}),
-                **(
-                    {
-                        "anchor_pos": ObservationTermCfg(func=track_mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=noise(-0.25, 0.25)),
-                        "anchor_ori": ObservationTermCfg(func=track_mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=noise(-0.05, 0.05)),
-                    }
-                    if a.anchor_obs
-                    else {}
-                ),
-            },
+            terms=_goal_terms(a, noise),
             concatenate_terms=True,
             enable_corruption=a.obs_noise,
         ),
@@ -173,12 +179,12 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
             },
         )
         events["encoder_bias"] = EventTermCfg(
-            mode="reset",
+            mode="startup",
             func=dr.encoder_bias,
             params={"asset_cfg": SceneEntityCfg("robot"), "bias_range": (-0.01, 0.01)},
         )
         events["foot_friction"] = EventTermCfg(
-            mode="reset",
+            mode="startup",
             func=dr.geom_friction,
             params={
                 "asset_cfg": SceneEntityCfg("robot", geom_names=FOOT_GEOM_REGEX),

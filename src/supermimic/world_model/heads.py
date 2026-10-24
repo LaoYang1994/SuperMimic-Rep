@@ -54,6 +54,26 @@ def anchor_relative_obs(robot_anchor_pos: torch.Tensor, robot_anchor_quat: torch
 ANCHOR_OBS_DIM = 9
 
 
+def anchor_ori_obs(robot_anchor_quat: torch.Tensor, ref_anchor_quat: torch.Tensor) -> torch.Tensor:
+    """Reference anchor orientation in the robot anchor frame as 6D (first two rotation-matrix columns),
+    i.e. mjlab's ``motion_anchor_ori_b``. ``ref_anchor_quat`` may carry extra leading window dims after the
+    batch dim: (N, 4) robot vs (N, K, 4) reference gives (N, K, 6)."""
+    from supermimic.kinematics.rotations import matrix_from_quat, quat_inv, quat_mul
+
+    q10 = quat_inv(robot_anchor_quat)
+    while q10.dim() < ref_anchor_quat.dim():
+        q10 = q10.unsqueeze(-2)
+    q12 = quat_mul(q10.expand_as(ref_anchor_quat), ref_anchor_quat)
+    mat = matrix_from_quat(q12)
+    return mat[..., :2].reshape(*q12.shape[:-1], 6)
+
+
+def beyondmimic_seq_goal(joint_pos: torch.Tensor, joint_vel: torch.Tensor, ori6: torch.Tensor) -> torch.Tensor:
+    """Goal of obs_mode ``beyondmimic_seq``: K frames of [abs. joint pos 29, joint vel 29, anchor ori 6D],
+    frame-major, from (N, K, 29), (N, K, 29), (N, K, 6) -> (N, K*64)."""
+    return torch.cat([joint_pos, joint_vel, ori6], dim=-1).reshape(joint_pos.shape[0], -1)
+
+
 def flatten_history_term_major(hist: torch.Tensor) -> torch.Tensor:
     """(H, N, 93) oldest→newest  ->  (N, 930) in mjlab's term-major layout [A_t0..A_tH-1, B_t0..]."""
     H, N, _ = hist.shape
@@ -92,6 +112,7 @@ class AnalyticHeads:
     ):
         self.fk = fk
         self.tracked_idx = fk.body_indices(tracked_body_names)
+        self.anchor_body = anchor_body_name
         self.anchor_index = tracked_body_names.index(anchor_body_name)
         self.root_fk_index = fk.body_index(root_body_name)
         self.soft_limits = soft_limits

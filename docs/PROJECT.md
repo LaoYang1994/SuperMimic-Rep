@@ -1,0 +1,117 @@
+# Project
+
+## Overview
+复现 **SuperMimic**（arXiv 2610.28480，CoRL 2026）：用一个从仿真器转移数据学到的可微世界模型，
+加上短视野 BPTT actor-critic，训练 Unitree G1（29 自由度）全身动作跟踪策略。目标是在单卡上
+尽量对上论文的数字：LAFAN1 单卡 1.2 h 达到回报 0.82（Fig. 4a），BONES-SEED 129,514 条
+单卡 3 h 超过 SONIC、失败 25 条（Fig. 3a / Table A.8）。
+
+代码基于 [CuboiLeo/SuperMimic-Reproduced](https://github.com/CuboiLeo/SuperMimic-Reproduced)
+（MIT，git remote `upstream`，导入于其 `d9be385`），底座是 mjlab（MuJoCo Warp）+ PyTorch，
+不依赖 rsl_rl。
+
+## Users
+本仓库维护者自己：在单卡 RTX PRO 6000 Blackwell（96 GB）上训练、评测、对照论文。
+
+## Core workflows
+1. **数据准备**：G1 重定向 CSV → 50 Hz npz（`scripts/data/csv_to_npz_batch.py`）→ BONES-SEED
+   名字过滤 + 可行性过滤（`scripts/data/filter_bones_seed.py`，论文附录 E）→ 可选打包成 fp16
+   紧凑库（`scripts/data/build_library.py`，常驻显存、在线 FK）。
+2. **训练**：`sm-train`（`src/supermimic/scripts/train.py`）跑 Algorithm A.1 主循环；多卡用
+   `torchrun`（每 rank 自带仿真与 replay buffer，梯度 all-reduce，lr × √world）。
+3. **评测**：`scripts/eval_benchmark.py` 按附录 F.1 协议整条 clip 确定性播放，输出归一化回报与
+   失败数；`scripts/eval_push.py` 推力恢复（§4.3）；`scripts/diag_drift.py` 全局漂移诊断。
+4. **查看**：`scripts/play.py` 交互回放（参考 ghost），`scripts/tb_tail.py` 无 UI 读 TensorBoard。
+
+## Environments
+- **本地**（Mac 上的 OrbStack Linux，aarch64，无 GPU）：写代码、能访问 GitHub / HuggingFace。
+- **GPU 机**：`ssh <gpu-box>`，代码 `$SM_REPO`，
+  数据 `$SM_BANK`。Ubuntu 24.04 容器、驱动 580 / CUDA 13.0、uv、
+  Python 3.12。**访问不了 GitHub 和 HuggingFace**（PyPI、download.pytorch.org、pypi.nvidia.com、
+  百度镜像可用），git 依赖与数据需在本地取得后 rsync 过去。无 Docker。
+- 依赖：Python 3.12、`uv`；torch ≥ 2.14（cu130）、mujoco / mujoco-warp 3.16、warp-lang ≥ 1.15、
+  mjlab 固定在 commit `8bb2bc9`（见 `pyproject.toml` 的 `[tool.uv.sources]`）。
+
+## Repository layout
+```text
+SuperMimic/
+├── AGENTS.md / CLAUDE.md        agent 指令（CLAUDE.md 只引用 AGENTS.md）
+├── pyproject.toml / uv.lock     依赖（uv）
+├── src/supermimic/
+│   ├── config.py                TrainConfig（tyro CLI）：data / env / world_model / wm_trainer /
+│   │                            policy / critic / policy_trainer / schedule
+│   ├── data/                    CSV→npz 转换、GPU 环形 replay buffer、mjlab recorder
+│   ├── envs/                    mjlab ManagerBasedRlEnv 配置、带噪动作、sim context ξ、状态读写
+│   │   └── mdp/                 动作库、多 clip 命令 + 回报采样重置、观测、奖励、终止
+│   ├── kinematics/              G1 可微 FK（torch）与旋转工具（四元数 wxyz）
+│   ├── world_model/             状态表示、动力学 MLP、终止头、解析观测/奖励头、WM 训练器
+│   ├── imagination/             想象 rollout、Eq. 2 目标与 Eq. 3 GAE、BPTT 策略训练器、编译封装
+│   ├── policy/                  MotionEncoder + 共享 Decoder（策略）、Critic
+│   ├── training/                主循环、cosine lr、数据并行
+│   ├── eval/                    附录 F benchmark
+│   └── scripts/train.py         训练入口 sm-train
+├── scripts/                     数据处理、评测、诊断、基准、可视化
+├── tests/                       FK / 解析头 / 环境 / 世界模型 / 想象 / 转换 / 紧凑库 测试
+├── docs/
+│   ├── PROJECT.md / CONCEPTS.md / CONTRACTS.md     ChangeFlow 长期文档
+│   ├── changes/ experiences/ workflows/            ChangeFlow
+│   └── upstream/                上游文档（只读参考，见下）
+├── data/  logs/                 不入库
+└── tmp/                         本地临时文件，不入库
+```
+
+上游文档（`docs/upstream/`，导入时冻结，不再修改，内部互相引用的路径仍是旧的 `docs/X.md`）：
+`PAPER_SPEC.md` 是论文全部数值与协议的逐条转录，含"论文未指明"清单 U1–U20；
+`REPRODUCTION_PLAN.md` 是设计决策 D1–D20；`EXPERIMENTS.md` 是上游 e1–e8 的实验日志；
+`REVIEW_LOG.md` 是上游计划的审查记录。本仓库的新结论写进 ChangeFlow 的 change 与长期文档。
+
+## Core modules
+### 环境层（`envs/`）
+mjlab 环境：50 Hz 控制、4 个 5 ms 子步。策略观测是论文 Table A.1 的 93 维本体项 × 10 帧历史，
+goal 是未来 K=10 帧参考（每帧 68 维）；`EnvCfg.anchor_obs=True` 时 goal 再加 9 维锚点相对位姿
+（位置 3 + 6D 旋转，偏离论文）。奖励是 BeyondMimic 跟踪奖励（去掉自碰撞项，关节限位权重 −2），
+终止条件是骨盆高度 > 0.25 m 或倾斜 > 0.8，clip 结束按超时处理。sim context ξ 共 33 维：足底摩擦 1、
+编码器零偏 29、躯干质心偏移 3。重置按 1 s 分箱、基于回报采样。
+
+### 世界模型（`world_model/`）
+状态 71 维（qpos | qvel）。动力学 MLP（2048×3）预测速度增量后做显式积分；终止头是学出来的，
+观测和奖励头是解析的（可微 FK 计算）。在 k=8 步自回归窗口上拟合。
+
+### 想象与策略更新（`imagination/`）
+从 replay buffer 采起点，冻结世界模型想象 H=32 步，用软存活权重和 critic bootstrap 构造
+Eq. 2 目标，再 BPTT。Critic 在 GAE(λ=0.95) 目标上训练，5 epoch × 4 minibatch。支持 `torch.compile`。
+
+### 训练循环（`training/loop.py`）
+一次"迭代"等于一个向量化仿真步；更新按 UTD=0.4 的比例累加触发（上游计划 D12 的解读 A）。
+默认总长 320k 迭代，cosine 衰减到 0.03×，衰减区间占总长的 250k/320k。
+
+## Features
+### LAFAN1 跟踪训练（论文 Fig. 4a 设定）
+Status: partial
+
+Supported:
+- 40 条 clip（2.45 h）的单卡与多卡训练、整条 clip benchmark。
+- 上游结果（RTX 5090）：论文观测口径回报在 0.56 左右封顶（全局漂移）；加 9 维锚点观测
+  1.66 h 达到 0.824、3.3 h 达到 0.904。
+
+Not supported:
+- 尚未在本仓库的 GPU 机上复现；尚未与论文口径对上 0.82 @ 1.2 h。
+
+### BONES-SEED 全量训练（论文 Fig. 3a / Table A.8 设定）
+Status: partial
+
+Supported:
+- 附录 E 两道过滤（上游得到 129,943 条 / 263.75 h，论文 129,514 / 264.56 h）、紧凑库、
+  2000 条子集评测、多卡数据并行。
+
+Not supported:
+- 全量 129,514 条 benchmark 与 SONIC 失败数对照尚未完成；数据仍在传往 GPU 机。
+
+### 其他评测
+Status: partial
+
+Supported:
+- 推力恢复测试（§4.3）、漂移诊断、仿真与想象吞吐基准。
+
+Not supported:
+- 速度指令接口与蒸馏对照（§4.5）、PPO-Sim / PPO-WM 基线、H × critic 消融、ONNX 导出、真机部署。

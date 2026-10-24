@@ -26,7 +26,9 @@ class PolicyCfg:
     # Fixed goal feature scales: joint_pos 29, joint_vel 29, grav 3, ang_vel_b 3, lin_vel_h 3, height 1.
     goal_term_scale: tuple[float, ...] = (1.0, 5.0, 1.0, 2.0, 1.0, 1.0)
     decoder_last_gain: float = 0.01
-    goal_dim: int = GOAL_DIM  # 680 (+9 with anchor_obs)
+    goal_dim: int = GOAL_DIM  # set from goal_layout(obs_mode, future_frames)
+    obs_mode: str = "proprio_only"  # config.ObsMode; the Trainer copies EnvCfg.obs_mode here
+    future_frames: int = 10
 
 
 @dataclass
@@ -41,11 +43,32 @@ def _obs_scale_vector(cfg: PolicyCfg) -> torch.Tensor:
     return torch.cat(parts)  # term-major layout matches the flattened history
 
 
+REF_FRAME_SIZES = (29, 29, 3, 3, 3, 1)  # reference-only goal frame: joint pos, joint vel, grav, ang vel b, lin vel h, height
+SEQ_FRAME_SIZES = (29, 29, 6)  # beyondmimic_seq goal frame: abs. joint pos, joint vel, 6D anchor orientation
+
+
+def goal_layout(obs_mode: str, k: int, goal_term_scale: tuple[float, ...] = PolicyCfg.goal_term_scale) -> tuple[int, torch.Tensor]:
+    """(goal dim, per-dimension divisor-inverse scale) of the goal observation for an observation setting.
+
+    beyondmimic_seq: k frames x [joint pos 29, joint vel 29, anchor ori 6D]   (frame-major)
+    anchor_ori_now:  k reference frames x 68, then the current 6D anchor orientation
+    proprio_only:    k reference frames x 68
+    anchor_pose9:    k reference frames x 68, then the current anchor position 3 + orientation 6D
+    """
+    if obs_mode == "beyondmimic_seq":
+        js, jvs = goal_term_scale[0], goal_term_scale[1]
+        frame = torch.cat([torch.full((29,), 1.0 / js), torch.full((29,), 1.0 / jvs), torch.ones(6)])
+        return k * 64, frame.repeat(k)
+    ref = torch.cat([torch.full((n,), 1.0 / s) for n, s in zip(REF_FRAME_SIZES, goal_term_scale)]).repeat(k)
+    extra = {"anchor_ori_now": 6, "proprio_only": 0, "anchor_pose9": 9}[obs_mode]
+    return k * 68 + extra, torch.cat([ref, torch.ones(extra)])
+
+
 def _goal_scale_vector(cfg: PolicyCfg, goal_dim: int) -> torch.Tensor:
-    sizes = (29, 29, 3, 3, 3, 1)
-    per_frame = torch.cat([torch.full((n,), 1.0 / s) for n, s in zip(sizes, cfg.goal_term_scale)])
-    k, extra = divmod(goal_dim, 68)
-    return torch.cat([per_frame.repeat(k), torch.ones(extra)])
+    dim, scale = goal_layout(cfg.obs_mode, cfg.future_frames, cfg.goal_term_scale)
+    if dim != goal_dim:
+        raise ValueError(f"goal_dim {goal_dim} does not match obs_mode {cfg.obs_mode!r} with K={cfg.future_frames} ({dim})")
+    return scale
 
 
 class MotionEncoder(nn.Module):
@@ -83,7 +106,7 @@ class Policy(nn.Module):
 
 
 class Critic(nn.Module):
-    """V(canonical state 71, goal 680, xi 33, root error 4) -> scalar (one per interface)."""
+    """V(canonical state 71, goal (see goal_layout), xi 33, root error 4) -> scalar (one per interface)."""
 
     def __init__(self, cfg: CriticCfg, feat_dim: int = 71, goal_dim: int | None = None, xi_dim: int = 33, pcfg: PolicyCfg | None = None):
         super().__init__()

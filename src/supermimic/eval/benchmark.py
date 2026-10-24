@@ -3,8 +3,10 @@
 Every clip is played once from its first frame with the deterministic policy:
 no observation/action noise, no reset noise, no domain randomization (foot friction 1.0),
 deterministic physics. A clip *fails* if the training termination (pelvis height /
-tilt vs reference) fires before the clip ends. Normalised return = sum of per-step
-rewards / (max step reward * number of steps).
+tilt vs reference) fires before the clip ends. Normalised return (paper §4) = sum of
+per-step rewards / the largest sum the clip allows (max step reward * steps of the whole
+clip), so a policy that terminates early scores low. ``norm_return_per_step`` keeps the
+upstream variant (divided by the steps actually executed) for comparison only.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from pathlib import Path
 
 import torch
 
+from supermimic.config import obs_mode_from_config
 from supermimic.envs import SuperMimicEnvCfgArgs, make_env
 from supermimic.policy.nets import Policy, PolicyCfg
 
@@ -24,15 +27,19 @@ class ClipResult:
     name: str
     frames: int
     steps: int
-    norm_return: float
+    norm_return: float  # paper §4: / (max_r * steps of the whole clip)
     failed: bool
     fail_step: int  # -1 if not failed
     terms: dict | None = None  # per-term mean reward per step (dt-scaled)
+    norm_return_per_step: float = float("nan")  # upstream: / (max_r * executed steps)
 
 
 def load_policy_from_checkpoint(path: str | Path, device: str) -> tuple[Policy, dict]:
     ck = torch.load(path, map_location=device, weights_only=False)
-    pc = ck["config"]["policy"]
+    pc = dict(ck["config"]["policy"])
+    # Runs from before obs_mode stored only EnvCfg.anchor_obs; their goal layout follows from it.
+    pc.setdefault("obs_mode", obs_mode_from_config(ck["config"]))
+    pc.setdefault("future_frames", ck["config"]["env"]["future_frames"])
     pcfg = PolicyCfg(**{k: (tuple(v) if isinstance(v, list) else v) for k, v in pc.items()})
     policy = Policy(pcfg).to(device)
     policy.load_state_dict(ck["policy"])
@@ -41,8 +48,10 @@ def load_policy_from_checkpoint(path: str | Path, device: str) -> tuple[Policy, 
 
 
 @torch.no_grad()
-def run_benchmark(policy: Policy, npz_files: list[str], device: str = "cuda:0", num_envs: int | None = None, future_frames: int = 10, verbose: bool = True, anchor_obs: bool = False) -> list[ClipResult]:
-    num_envs = min(num_envs or 1024, len(npz_files))
+def run_benchmark(policy: Policy, npz_files: list[str], device: str = "cuda:0", num_envs: int | None = None, future_frames: int = 10, verbose: bool = True, obs_mode: str = "proprio_only", compact_library: bool = False, num_clips: int | None = None) -> list[ClipResult]:
+    """``npz_files`` is a list of clip npz files, or ``[library.pt]`` with ``compact_library=True`` (then pass
+    ``num_clips``, the library's clip count, to size the env pool)."""
+    num_envs = min(num_envs or 1024, num_clips if compact_library else len(npz_files))
     args = SuperMimicEnvCfgArgs(
         npz_files=npz_files,
         num_envs=num_envs,
@@ -55,7 +64,8 @@ def run_benchmark(policy: Policy, npz_files: list[str], device: str = "cuda:0", 
         sampling_mode="start",
         record_transitions=False,
         seed=0,
-        anchor_obs=anchor_obs,
+        obs_mode=obs_mode,
+        compact_library=compact_library,
     )
     env = make_env(args, device=device)
     try:
@@ -90,11 +100,15 @@ def run_benchmark(policy: Policy, npz_files: list[str], device: str = "cuda:0", 
                     ci = int(current[e])
                     if ci < n_clips and ci not in results:
                         st = int(steps[e])
+                        # A full playback from the first frame takes `frames` env steps here (the clip-end
+                        # time-out fires on the step after the last frame is reached).
+                        full = max(lib.clips[ci].length, st, 1)
                         results[ci] = ClipResult(
                             name=lib.clips[ci].name,
                             frames=lib.clips[ci].length,
                             steps=st,
-                            norm_return=float(ret_sum[e]) / (max_r * max(st, 1)),
+                            norm_return=float(ret_sum[e]) / (max_r * full),
+                            norm_return_per_step=float(ret_sum[e]) / (max_r * max(st, 1)),
                             failed=bool(term[e]),
                             fail_step=st if bool(term[e]) else -1,
                             terms={n: float(term_sum[e, i]) / max(st, 1) for i, n in enumerate(term_names)},
@@ -120,10 +134,21 @@ def summarize(results: list[ClipResult]) -> dict:
     n = len(results)
     failed = sum(r.failed for r in results)
     mean_ret = sum(r.norm_return for r in results) / max(n, 1)
-    # Length-weighted return (paper Fig. 3a uses the benchmark aggregate; weighting by steps).
+    # Weighted by whole-clip length (paper Fig. 3a does not say which aggregate it reports: report both).
+    full = [max(r.frames, r.steps, 1) for r in results]
+    w_ret = sum(r.norm_return * f for r, f in zip(results, full)) / max(sum(full), 1)
+    # Upstream variant (per executed step), kept only to compare with upstream's numbers.
     tot_steps = sum(r.steps for r in results)
-    w_ret = sum(r.norm_return * r.steps for r in results) / max(tot_steps, 1)
-    out = {"clips": n, "failed": failed, "mean_norm_return": mean_ret, "step_weighted_norm_return": w_ret}
+    mean_ps = sum(r.norm_return_per_step for r in results) / max(n, 1)
+    w_ps = sum(r.norm_return_per_step * r.steps for r in results) / max(tot_steps, 1)
+    out = {
+        "clips": n,
+        "failed": failed,
+        "mean_norm_return": mean_ret,
+        "length_weighted_norm_return": w_ret,
+        "mean_norm_return_per_step": mean_ps,
+        "step_weighted_norm_return_per_step": w_ps,
+    }
     if results and results[0].terms:
         out["terms"] = {k: sum(r.terms[k] * r.steps for r in results) / max(tot_steps, 1) for k in results[0].terms}
     return out
