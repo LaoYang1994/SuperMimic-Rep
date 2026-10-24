@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
-from supermimic.data.replay_buffer import ReplayBuffer
+from supermimic.data.replay_buffer import ReplayBuffer, StartBatch
 from supermimic.envs.mdp.motion_library import MotionLibrary
 from supermimic.imagination.objective import gae_targets, policy_objective
 from supermimic.imagination.rollout import ImagRollout, imagine
@@ -76,8 +76,11 @@ class PolicyTrainer:
         return feat, ro.goals, ro.e_root
 
     def update(self, buffer: ReplayBuffer, xi_norm_fn=None) -> dict[str, float]:
+        return self.update_on(buffer.sample_starts(self.cfg.batch_size, self.cfg.history))
+
+    def update_on(self, start: StartBatch) -> dict[str, float]:
+        """One actor + critic update from pre-sampled imagination start states."""
         cfg = self.cfg
-        start = buffer.sample_starts(cfg.batch_size, cfg.history)
         xi_norm = self.wm.spec.normalize_xi(start.xi)
 
         # ---- actor: BPTT through the frozen world model ------------------------------------

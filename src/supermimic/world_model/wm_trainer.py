@@ -50,9 +50,13 @@ class WorldModelTrainer:
         return self.wm.window_loss(w.states, w.a_exec, w.xi, w.done, refs)
 
     def update(self, buffer: ReplayBuffer) -> dict[str, float]:
+        # Sampling consumes the only randomness here, so sampling all batches first draws the same windows.
+        return self.update_on([buffer.sample_windows(self.cfg.batch_size, self.cfg.window) for _ in range(self.cfg.batches_per_update)])
+
+    def update_on(self, batches: list[WindowBatch]) -> dict[str, float]:
+        """One update (``batches_per_update`` optimizer steps) on pre-sampled windows."""
         agg: dict[str, torch.Tensor] = {}
-        for _ in range(self.cfg.batches_per_update):
-            w = buffer.sample_windows(self.cfg.batch_size, self.cfg.window)
+        for w in batches:
             loss, m = self.loss_on(w)
             self.opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -64,7 +68,7 @@ class WorldModelTrainer:
             for k, v in m.items():
                 agg[k] = agg.get(k, 0.0) + v
         # Single host sync per update (keeps the CPU queuing GPU work across minibatches).
-        return {k: float(v) / self.cfg.batches_per_update for k, v in agg.items()}
+        return {k: float(v) / len(batches) for k, v in agg.items()}
 
     @torch.no_grad()
     def online_error(self, buffer: ReplayBuffer, n: int = 1024, k: int = 8) -> torch.Tensor:
