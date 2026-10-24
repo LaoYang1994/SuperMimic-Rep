@@ -21,7 +21,7 @@ class WMTrainerCfg:
     lr: float = 2e-4
     grad_clip: float = 1.0
     weight_decay: float = 0.0
-    compile: str | None = "default"
+    compile: str | None = "reduce-overhead"  # whole k-step window loss, replayed as CUDA graphs
 
 
 def reference_at(lib: MotionLibrary, frame: torch.Tensor) -> ReferenceFrame:
@@ -52,8 +52,10 @@ class WorldModelTrainer:
         return self.wm.window_loss(w.states, w.a_exec, w.xi, w.done, refs)
 
     def update(self, buffer: ReplayBuffer) -> dict[str, float]:
-        # Sampling consumes the only randomness here, so sampling all batches first draws the same windows.
-        return self.update_on([buffer.sample_windows(self.cfg.batch_size, self.cfg.window) for _ in range(self.cfg.batches_per_update)])
+        # Sampling consumes the only randomness here, so sampling all batches first draws the same windows; the
+        # buffer does not change in between, so one window mask serves every batch.
+        mask = buffer.window_mask(self.cfg.window)
+        return self.update_on([buffer.sample_windows(self.cfg.batch_size, self.cfg.window, mask) for _ in range(self.cfg.batches_per_update)])
 
     def update_on(self, batches: list[WindowBatch]) -> dict[str, float]:
         """One update (``batches_per_update`` optimizer steps) on pre-sampled windows."""

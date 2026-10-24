@@ -72,7 +72,9 @@ class WorldModel(nn.Module):
         return s_next, e * e, bce, logits
 
     def enable_compile(self, mode: str | None = "default") -> None:
-        self._loss_step_fn = torch.compile(self._loss_step, mode=None if mode == "default" else mode, dynamic=False) if mode else self._loss_step
+        """Compile the whole k-step window loss as one function; "reduce-overhead" replays it as CUDA graphs."""
+        self._cudagraphs = mode == "reduce-overhead"
+        self._window_loss_fn = torch.compile(self._window_loss, mode=None if mode == "default" else mode, dynamic=False) if mode else self._window_loss
 
     def window_loss(self, states: torch.Tensor, a_exec: torch.Tensor, xi: torch.Tensor, done: torch.Tensor, refs: list[ReferenceFrame]):
         """k-step autoregressive loss.
@@ -81,17 +83,30 @@ class WorldModel(nn.Module):
         done: (k, n) termination label of states 1..k; refs[j]: reference of transition j (for the
         termination features of state j+1).
         """
+        fn = getattr(self, "_window_loss_fn", None) or self._window_loss
+        if getattr(self, "_cudagraphs", False):
+            # Outputs of the previous window (loss already back-propagated, metrics already accumulated) may be
+            # overwritten by this replay.
+            torch.compiler.cudagraph_mark_step_begin()
+        ref_pos = torch.stack([r.root_pos_w for r in refs])
+        ref_quat = torch.stack([r.root_quat_w for r in refs])
+        loss, state_loss, term_bce, nse_1, nse_k, term_acc = fn(states, a_exec, xi, done, ref_pos, ref_quat)
+        # Metrics stay on-device (detached tensors): a float() here would stall the CPU on the
+        # forward pass every minibatch, which in data-parallel runs turns into lockstep waiting.
+        # Cloned: CUDA-graph outputs are overwritten by the next replay.
+        metrics = dict(state_loss=state_loss, term_bce=term_bce, nse_1step=nse_1, nse_kstep=nse_k, term_acc=term_acc)
+        return loss, {k: v.detach().clone() for k, v in metrics.items()}
+
+    def _window_loss(self, states, a_exec, xi, done, ref_root_pos, ref_root_quat):
         k = a_exec.shape[0]
         s = states[0]
         total_state = 0.0
         total_term = 0.0
-        metrics = {}
         err_first = None
         err_last = None
         acc_num = 0.0
-        step_fn = getattr(self, "_loss_step_fn", None) or self._loss_step
         for j in range(k):
-            s, sq, bce, logits = step_fn(s, a_exec[j], xi, states[j + 1], done[j], refs[j].root_pos_w, refs[j].root_quat_w)
+            s, sq, bce, logits = self._loss_step(s, a_exec[j], xi, states[j + 1], done[j], ref_root_pos[j], ref_root_quat[j])
             total_state = total_state + sq.sum(-1).mean()
             total_term = total_term + bce.mean()
             with torch.no_grad():
@@ -101,16 +116,7 @@ class WorldModel(nn.Module):
                 err_last = nse
                 acc_num += ((logits > 0).float() == done[j]).float().mean()
         loss = total_state / k + self.cfg.term_loss_weight * total_term / k
-        # Metrics stay on-device (detached tensors): a float() here would stall the CPU on the
-        # forward pass every minibatch, which in data-parallel runs turns into lockstep waiting.
-        metrics.update(
-            state_loss=(total_state / k).detach(),
-            term_bce=(total_term / k).detach(),
-            nse_1step=err_first.detach(),
-            nse_kstep=err_last.detach(),
-            term_acc=(acc_num / k).detach(),
-        )
-        return loss, metrics
+        return loss, (total_state / k).detach(), (total_term / k).detach(), err_first.detach(), err_last.detach(), (acc_num / k).detach()
 
     # ------------------------------------------------------------------ diagnostics
 

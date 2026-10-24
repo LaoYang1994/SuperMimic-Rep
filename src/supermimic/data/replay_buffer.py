@@ -123,8 +123,9 @@ class ReplayBuffer:
         return idx // self.T, idx % self.T
 
     @torch.no_grad()
-    def sample_windows(self, n: int, k: int) -> WindowBatch:
-        e, t = self._sample_from_mask(self.window_mask(k), n)
+    def sample_windows(self, n: int, k: int, mask: torch.Tensor | None = None) -> WindowBatch:
+        """``mask``: a ``window_mask(k)`` of the current contents, to reuse it across several batches."""
+        e, t = self._sample_from_mask(self.window_mask(k) if mask is None else mask, n)
         offs = torch.arange(k + 1, device=self.device)
         tt = (t[None, :] + offs[:, None]) % self.T  # (k+1, n)
         ee = e[None, :].expand(k + 1, n)
