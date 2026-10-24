@@ -66,8 +66,8 @@ def test_training_smoke(tmp_path):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or not NPZ.exists(), reason="needs CUDA + LAFAN1 npz")
-@pytest.mark.parametrize("obs_mode", ["anchor_ori_now", "beyondmimic_seq", "anchor_pose9"])
-def test_compiled_imagined_step_matches_eager(tmp_path, obs_mode):
+@pytest.mark.parametrize("obs_mode,mode", [("anchor_ori_now", "reduce-overhead"), ("beyondmimic_seq", "default"), ("anchor_pose9", "default")])
+def test_compiled_imagined_step_matches_eager(tmp_path, obs_mode, mode):
     """The whole compiled imagined step (policy + world model + goal + noisy history) equals the eager one:
     same noise stream, same rollout, same policy gradient up to float fusion differences."""
     from supermimic.config import TrainConfig
@@ -95,14 +95,14 @@ def test_compiled_imagined_step_matches_eager(tmp_path, obs_mode):
         q0 = tr.lib.default_joint_pos
         tr.wm.requires_grad_(False)
         out = {}
-        for name, mode in (("eager", None), ("compiled", "default")):
-            step = ImagRolloutStep(tr.wm, tr.policy, q0, obs_mode, compile_mode=mode)
+        for name, m in (("eager", None), ("compiled", mode)):
+            step = ImagRolloutStep(tr.wm, tr.policy, q0, obs_mode, compile_mode=m)
             torch.manual_seed(123)
             ro = imagine(tr.wm, tr.policy, tr.lib, start, 8, cfg.policy_trainer.future_frames, obs_noise=True, step_fn=step, obs_mode=obs_mode)
             tr.policy.zero_grad(set_to_none=True)
             (-policy_objective(ro, None, 0.99)).backward()
             grad = torch.cat([p.grad.flatten() for p in tr.policy.parameters()])
-            out[name] = (ro, grad)
+            out[name] = (ro, grad.clone())
         (re, ge), (rc, gc) = out["eager"], out["compiled"]
         for f in ("states", "actions", "rewards", "dhat", "survival", "goals", "e_root"):
             torch.testing.assert_close(getattr(rc, f), getattr(re, f), rtol=1e-3, atol=1e-4, msg=f)

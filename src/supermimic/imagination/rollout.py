@@ -44,6 +44,7 @@ def imagine(
     n = start.state.shape[0]
     q0 = lib.default_joint_pos
     step_fn = step_fn or ImagRolloutStep(wm, policy, q0, obs_mode)
+    step_fn.begin_rollout()
     noise_half = OBS_NOISE_HALF.to(device)
     ai = wm.heads.anchor_index
 

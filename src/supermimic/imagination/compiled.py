@@ -72,9 +72,15 @@ class ImagRolloutStep:
         self.noise_half = OBS_NOISE_HALF.to(dev)
         self.anchor_noise_half = ANCHOR_NOISE_HALF.to(dev)
         self._fn = self._step
+        self.cudagraphs = compile_mode == "reduce-overhead"
         if compile_mode:
             mode = None if compile_mode == "default" else compile_mode
             self._fn = torch.compile(self._step, mode=mode, dynamic=False)
+
+    def begin_rollout(self) -> None:
+        """Start of a rollout: CUDA-graph outputs of the previous rollout may be overwritten from here on."""
+        if self.cudagraphs:
+            torch.compiler.cudagraph_mark_step_begin()
 
     def _step(self, s, a_prev, hist, goal, c, xi, ref_t, u_obs, goal_next_static, ref_next, u_goal):
         a = self.policy(flatten_history_term_major(hist), goal)

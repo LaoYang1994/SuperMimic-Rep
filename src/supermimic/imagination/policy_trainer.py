@@ -33,7 +33,9 @@ class PolicyTrainerCfg:
     critic_minibatches: int = 4
     use_critic: bool = True
     obs_noise: bool = True
-    compile: str | None = "default"
+    # torch.compile mode of the imagined step; "reduce-overhead" replays it as CUDA graphs (the compiled step
+    # still has hundreds of kernels per call, so launch overhead dominates without graphs).
+    compile: str | None = "reduce-overhead"
     obs_mode: str = "proprio_only"  # config.ObsMode; the Trainer copies EnvCfg.obs_mode here
 
 
