@@ -74,9 +74,11 @@ def run(a) -> None:
     tr.wm.load_state_dict(snap["wm"])
     tr.policy.load_state_dict(snap["policy"])
     tr.critic.load_state_dict(snap["critic"])
-    # Adam's load_state_dict moves `step` to the device a fused/capturable optimizer expects.
+    from supermimic.training.optim import load_optimizer_state
+
+    # Keeps the candidate's optimizer implementation (e.g. fused) and moves `step` where it expects it.
     for opt, key in ((tr.wm_trainer.opt, "wm_opt"), (tr.policy_trainer.opt, "policy_opt"), (tr.policy_trainer.critic_opt, "critic_opt")):
-        opt.load_state_dict(snap[key])
+        load_optimizer_state(opt, snap[key])
     tr.wm_trainer.set_lr(snap["lr"])
     tr.policy_trainer.set_lr(snap["lr"])
     # map_location moved the RNG states to the GPU too; the setters want CPU ByteTensors.

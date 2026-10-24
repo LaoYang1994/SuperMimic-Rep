@@ -58,8 +58,9 @@ def clip_and_step(opt: torch.optim.Optimizer, params, max_norm: float, clip_valu
 class PolicyTrainer:
     def __init__(self, wm: WorldModel, policy: Policy, critic: Critic, lib: MotionLibrary, cfg: PolicyTrainerCfg):
         self.wm, self.policy, self.critic, self.lib, self.cfg = wm, policy, critic, lib, cfg
-        self.opt = torch.optim.Adam(policy.parameters(), lr=cfg.lr, betas=cfg.betas)
-        self.critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr)
+        # fused: see WorldModelTrainer.
+        self.opt = torch.optim.Adam(policy.parameters(), lr=cfg.lr, betas=cfg.betas, fused=True)
+        self.critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr, fused=True)
         from supermimic.imagination.compiled import ImagStep
 
         self.step_fn = ImagStep(wm, lib.default_joint_pos, compile_mode=cfg.compile)

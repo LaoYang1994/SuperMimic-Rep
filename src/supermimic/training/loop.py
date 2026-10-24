@@ -19,6 +19,7 @@ from supermimic.imagination.policy_trainer import PolicyTrainer
 from supermimic.kinematics.g1_fk import G1Kinematics
 from supermimic.policy.nets import Critic, Policy, goal_layout
 from supermimic.training.distributed import allreduce_mean, broadcast_params, finalize, init_distributed, world_size
+from supermimic.training.optim import load_optimizer_state
 from supermimic.training.schedule import cosine_lr, sim_steps_this_iter
 from supermimic.world_model.heads import AnalyticHeads
 from supermimic.world_model.wm_trainer import WorldModelTrainer
@@ -136,9 +137,9 @@ class Trainer:
         self.wm.load_state_dict(ck["wm"])
         self.policy.load_state_dict(ck["policy"])
         self.critic.load_state_dict(ck["critic"])
-        self.wm_trainer.opt.load_state_dict(ck["wm_opt"])
-        self.policy_trainer.opt.load_state_dict(ck["policy_opt"])
-        self.policy_trainer.critic_opt.load_state_dict(ck["critic_opt"])
+        load_optimizer_state(self.wm_trainer.opt, ck["wm_opt"])
+        load_optimizer_state(self.policy_trainer.opt, ck["policy_opt"])
+        load_optimizer_state(self.policy_trainer.critic_opt, ck["critic_opt"])
         self.command.bin_return.copy_(ck["bin_return"])
         self.command.bin_memory.copy_(ck["bin_memory"])
         self.iteration = ck["iteration"]

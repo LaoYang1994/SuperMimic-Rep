@@ -35,7 +35,9 @@ class WorldModelTrainer:
         self.wm = wm
         self.lib = lib
         self.cfg = cfg
-        self.opt = torch.optim.Adam(wm.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+        # fused: one kernel per step with `step` kept on the GPU (the default implementation reads a GPU `step`
+        # with .item() per parameter after a checkpoint load -> one host sync per parameter per step).
+        self.opt = torch.optim.Adam(wm.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, fused=True)
         wm.enable_compile(cfg.compile)
 
     def set_lr(self, lr: float) -> None:
