@@ -11,7 +11,7 @@ from supermimic.envs.mdp.motion_library import MotionLibrary
 from supermimic.imagination.objective import gae_targets, policy_objective
 from supermimic.imagination.rollout import ImagRollout, imagine
 from supermimic.policy.nets import Critic, Policy
-from supermimic.training.distributed import allreduce_grads, allreduce_mean
+from supermimic.training.distributed import allreduce_grads, allreduce_max_
 from supermimic.world_model.world_model import WorldModel
 
 
@@ -37,22 +37,32 @@ class PolicyTrainerCfg:
     obs_mode: str = "proprio_only"  # config.ObsMode; the Trainer copies EnvCfg.obs_mode here
 
 
-def clip_and_step(opt: torch.optim.Optimizer, params, max_norm: float, clip_value: float | None = None) -> tuple[torch.Tensor, bool]:
-    """Clip gradients and step, unless the total gradient norm is non-finite: then drop the gradients and
-    skip the step so one NaN/Inf cannot reach the weights or the optimizer moments.
+def fused_step(opt: torch.optim.Optimizer, skip: torch.Tensor) -> None:
+    """``opt.step()`` that is a no-op where ``skip`` (0-dim float32 GPU tensor) is 1: fused Adam's ``found_inf``
+    leaves weights, moments and ``step`` unchanged. No host sync."""
+    if not opt.defaults.get("fused"):
+        raise ValueError("fused_step needs a fused optimizer (found_inf is only supported there)")
+    opt.found_inf = skip
+    try:
+        opt.step()
+    finally:
+        del opt.found_inf
 
-    Returns (total grad norm before clipping, skipped). The finiteness test is one host sync.
+
+def clip_and_step(opt: torch.optim.Optimizer, params, max_norm: float, clip_value: float | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """Clip gradients and step, unless the total gradient norm is non-finite: then the step is skipped so one
+    NaN/Inf cannot reach the weights or the optimizer moments.
+
+    Returns (total grad norm before clipping, skipped as a 0-dim float tensor). The decision stays on the GPU.
     Gradients must already be all-reduced in data-parallel runs, so every rank takes the same decision.
     """
     params = [p for p in params if p.grad is not None]
     gn = torch.nn.utils.clip_grad_norm_(params, max_norm)
-    if not bool(torch.isfinite(gn)):
-        opt.zero_grad(set_to_none=True)
-        return gn, True
     if clip_value is not None:
         torch.nn.utils.clip_grad_value_(params, clip_value)
-    opt.step()
-    return gn, False
+    skipped = (~torch.isfinite(gn)).float()
+    fused_step(opt, skipped)
+    return gn, skipped
 
 
 class PolicyTrainer:
@@ -131,13 +141,13 @@ class PolicyTrainer:
                 # One host sync per update (not per minibatch): inputs and targets are detached rollout
                 # quantities, so if they are finite the clipped critic gradients are too. Every critic
                 # minibatch all-reduces its gradients, so all ranks must agree: skip if any rank is non-finite.
-                finite = bool(torch.stack([torch.isfinite(t).all() for t in (X_feat, X_goal, X_xi, X_er, Y)]).all())
-                finite = allreduce_mean(float(finite)) == 1.0
-            metrics["critic_skipped_nonfinite"] = float(not finite)
+                skip = (~torch.stack([torch.isfinite(t).all() for t in (X_feat, X_goal, X_xi, X_er, Y)]).all()).float()
+                allreduce_max_(skip)
+            metrics["critic_skipped_nonfinite"] = float(skip)
             N = Y.shape[0]
             mb = N // cfg.critic_minibatches
             last = torch.zeros((), device=Y.device)
-            for _ in range(cfg.critic_epochs if finite else 0):
+            for _ in range(cfg.critic_epochs):
                 perm = torch.randperm(N, device=Y.device)
                 for i in range(cfg.critic_minibatches):
                     idx = perm[i * mb : (i + 1) * mb]
@@ -147,8 +157,9 @@ class PolicyTrainer:
                     closs.backward()
                     allreduce_grads(self.critic)
                     torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.critic_grad_clip)
-                    self.critic_opt.step()
+                    fused_step(self.critic_opt, skip)
                     last = closs.detach()
+            last = torch.where(skip > 0, torch.zeros_like(last), last)
             metrics["critic_loss"] = float(last)
             metrics["critic_value_mean"] = float(values.mean())
             metrics["critic_target_mean"] = float(targets.mean())
