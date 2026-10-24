@@ -7,8 +7,9 @@ then profiles `--active` iterations with torch.profiler and prints:
   python scripts/perf/profile_train.py --run-name profile@B --obs-mode anchor_ori_now \
       --init-ckpt logs/lafan1_now_fixed@A/ckpt_0008000.pt --out logs/profile@B [--sync-stacks]
 Counts: `aten::item` also counts CPU-tensor items (e.g. non-fused Adam's CPU `step`), so the GPU sync indicator
-is `cudaStreamSynchronize` / `cudaMemcpyAsync`. `--sync-stacks` attributes those to the nearest Python call site
-in supermimic / mjlab code (slower: records stacks).
+is `cudaStreamSynchronize` / `cudaMemcpyAsync`. `--sync-stacks` additionally runs `--stack-iters` iterations under
+`torch.cuda.set_sync_debug_mode("warn")` and attributes every synchronizing torch op to its innermost supermimic /
+mjlab frame (syncs inside Warp kernels launched by the simulator are not torch ops and are not seen).
 """
 
 from __future__ import annotations
@@ -34,7 +35,8 @@ ap.add_argument("--active", type=int, default=20)
 ap.add_argument("--out", default="logs/profile")
 ap.add_argument("--init-ckpt", default=None, help="start from a trained checkpoint (steady-state profile)")
 ap.add_argument("--trace", action="store_true", help="also export a chrome trace (>1 GB; slow to write on PFS)")
-ap.add_argument("--sync-stacks", action="store_true", help="attribute host<->device syncs to Python call sites")
+ap.add_argument("--sync-stacks", action="store_true", help="attribute synchronizing torch ops to Python call sites")
+ap.add_argument("--stack-iters", type=int, default=2)
 a = ap.parse_args()
 
 cfg = TrainConfig(run_name=a.run_name)
@@ -51,14 +53,20 @@ for _ in range(sch.warmup_sim_steps):
     obs = tr._collect(obs, stats)
 
 
+phase = ""
+
+
 def iteration():
-    global obs
+    global obs, phase
     n, tr._utd_acc = sim_steps_this_iter(tr._utd_acc, sch.updates_per_env_step)
+    phase = "collect"
     with record_function("phase/collect"):
         for _ in range(n):
             obs = tr._collect(obs, stats)
+    phase = "wm"
     with record_function("phase/wm"):
         tr.wm_trainer.update(tr.buffer)
+    phase = "policy"
     with record_function("phase/policy"):
         tr.policy_trainer.update(tr.buffer)
 
@@ -76,7 +84,33 @@ torch.cuda.synchronize()
 plain = (time.time() - t0) / a.active
 print(f"unprofiled: {plain * 1000:.0f} ms / iteration ({1 / plain:.2f} it/s)", flush=True)
 
-with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=False, with_stack=a.sync_stacks) as prof:
+sync_sites = {}
+if a.sync_stacks:
+    import traceback
+    import warnings
+
+    def on_warning(message, category, filename, lineno, file=None, line=None):
+        if "synchronizing" not in str(message):
+            return
+        site = f"{filename}:{lineno}"
+        for fr in reversed(traceback.extract_stack()[:-1]):
+            if "supermimic" in fr.filename or "mjlab" in fr.filename:
+                site = f"{fr.filename.split('/site-packages/')[-1].split('/src/')[-1]}:{fr.lineno} {fr.name}"
+                break
+        k = (phase, site)
+        sync_sites[k] = sync_sites.get(k, 0) + 1
+
+    show, warnings.showwarning = warnings.showwarning, on_warning
+    with warnings.catch_warnings():
+        warnings.showwarning = on_warning
+        warnings.simplefilter("always")
+        torch.cuda.set_sync_debug_mode("warn")
+        for i in range(a.stack_iters):
+            iteration()
+        torch.cuda.set_sync_debug_mode(0)
+    warnings.showwarning = show
+
+with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=False, with_stack=False) as prof:
     t0 = time.perf_counter()
     for i in range(a.active):
         iteration()
@@ -151,25 +185,9 @@ summary = {
     "gpu_kernel_ms_per_iter": busy_s / a.active * 1000,
 }
 if a.sync_stacks:
-    # Runtime events carry no stack: walk up to the nearest op that has one, keep the innermost frame in our code.
-    def call_site(e):
-        p_ = e
-        while p_ is not None and not getattr(p_, "stack", None):
-            p_ = p_.cpu_parent
-        if p_ is None:
-            return "<no stack>"
-        for fr in p_.stack:
-            if "supermimic" in fr or "mjlab" in fr or "mujoco_warp" in fr:
-                return fr.split("/site-packages/")[-1].split("/src/")[-1]
-        return p_.stack[0] if p_.stack else "<no stack>"
-
-    sites = {}
-    for e in events:
-        if e.device_type == torch.autograd.DeviceType.CPU and e.name in ("cudaStreamSynchronize", "cudaMemcpyAsync"):
-            k = (e.name, call_site(e))
-            sites[k] = sites.get(k, 0) + 1
-    top = sorted(sites.items(), key=lambda kv: -kv[1])[:30]
-    summary["sync_sites_per_iter"] = [{"api": k[0], "site": k[1], "per_iter": v / a.active} for k, v in top]
+    top = sorted(sync_sites.items(), key=lambda kv: -kv[1])
+    summary["torch_syncs_per_iter"] = {ph: sum(v for (p_, _), v in sync_sites.items() if p_ == ph) / a.stack_iters for ph in ("collect", "wm", "policy")}
+    summary["torch_sync_sites_per_iter"] = [{"phase": k[0], "site": k[1], "per_iter": v / a.stack_iters} for k, v in top]
 out = Path(a.out)
 out.mkdir(parents=True, exist_ok=True)
 (out / "summary.json").write_text(json.dumps(summary, indent=1))

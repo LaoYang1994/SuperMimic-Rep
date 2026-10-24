@@ -79,8 +79,9 @@ def run(a) -> None:
         opt.load_state_dict(snap[key])
     tr.wm_trainer.set_lr(snap["lr"])
     tr.policy_trainer.set_lr(snap["lr"])
-    torch.set_rng_state(snap["rng_cpu"])
-    torch.cuda.set_rng_state_all(snap["rng_cuda"])
+    # map_location moved the RNG states to the GPU too; the setters want CPU ByteTensors.
+    torch.set_rng_state(snap["rng_cpu"].cpu())
+    torch.cuda.set_rng_state_all([r.cpu() for r in snap["rng_cuda"]])
     windows = [WindowBatch(**w) for w in snap["windows"]]
     start = StartBatch(**snap["start"])
     m_wm = tr.wm_trainer.update_on(windows)
