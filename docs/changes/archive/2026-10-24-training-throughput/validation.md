@@ -4,7 +4,7 @@
 `PYTHONPATH=<tree>/src`（启动时打印的 `supermimic.__file__` 已核对）。LAFAN1 40 clip，`anchor_ori_now`，
 起点权重 `lafan1_now_fixed@A/ckpt_0008000.pt`（第 8000 次迭代），迭代 = 更新。
 
-## B. 基线（BASE = `85c1620`，2026-10-24）
+## B. 基线（BASE = `5690624`，2026-10-24）
 
 ```bash
 PY=scripts/perf/profile_train.py; CK=<correctness tree>/logs/lafan1_now_fixed@A/ckpt_0008000.pt
@@ -75,7 +75,7 @@ critic **9.5e-4** → 通过。指标：WM loss 5.7e-6、`policy_grad_norm` 7.0e
 结论：去掉 560 次同步只省 20 ms（2.7%）——同步不是主要开销，CPU 发射（约 5.6 万次/迭代）才是；
 后续收益主要应来自 D/E 组（编译融合、CUDA Graphs）。collect 阶段 173.5 → 129 是测量波动（collect 里 reset 次数随 episode 结束变化）。
 
-### T10 + T11 无同步的非有限保护（tag `t10`，2026-10-24 20:25，提交 `f4c38a8`）
+### T10 + T11 无同步的非有限保护（tag `t10`，2026-10-24 20:25，提交 `9f2ba6f`）
 - pytest（clip_and_step 含"跳过时权重、动量、`step` 不变"与"非 fused 优化器报错"、optim_load、imagination）：rc=0，7 passed。
 - 对拍（对 `base_a`）：与 T9 **逐位相同**（无非有限梯度时计算不变）：参数最大相对差 wm 2.7e-5 / policy 6.5e-4 / critic 9.5e-4 → 通过。
 - 稳态 739 ms（1.35 次/s），与 T9 的 734 ms 在测量波动内；torch 同步 wm 17、policy 26.5（不变：去掉的是 `bool(isfinite)` 两处，
@@ -148,9 +148,9 @@ GPU 时间 298 ms 已成主要部分（上限约 3.4 次/s），其中 replay �
 ## G. 训练级等价（T28，2026-10-24 22:22 – 10-25 00:42）
 LAFAN1 40 clip，`anchor_ori_now`（+6 维朝向口径），1×RTX PRO 6000，迭代 = 更新（UTD 0.4），`total_iterations` 320k（学习率调度相同），
 `--schedule.checkpoint-interval 2000`，评测 `scripts/eval_benchmark.py`（附录 F.1 协议），回报 = 论文 §4 归一化回报的 clip 均值 / 失败数。
-- 快版 `lafan1_now_fast@B`：本 change `b660894`，机器 B，`--schedule.max-hours 2` → 停在第 17,350 次迭代（2.7 次/s，含启动编译）。
-- 对照 1 `lafan1_now_fixed@A`：`78a75fe`（修复，未加速），机器 A，2 h → 第 9,600 次迭代（1.3 次/s）。
-- 对照 2 `lafan1_now_fixed_20k@A`：同 `78a75fe`，机器 A，不限时，在第 20,000 次迭代后按 PID 停止（4.15 h）。
+- 快版 `lafan1_now_fast@B`：本 change `221ce2e`，机器 B，`--schedule.max-hours 2` → 停在第 17,350 次迭代（2.7 次/s，含启动编译）。
+- 对照 1 `lafan1_now_fixed@A`：`bc23265`（修复，未加速），机器 A，2 h → 第 9,600 次迭代（1.3 次/s）。
+- 对照 2 `lafan1_now_fixed_20k@A`：同 `bc23265`，机器 A，不限时，在第 20,000 次迭代后按 PID 停止（4.15 h）。
 
 | 迭代 | 对照 1 | 对照 2 | 快版 | 快版 − 对照 2 |
 |---|---|---|---|---|
@@ -173,16 +173,16 @@ LAFAN1 40 clip，`anchor_ori_now`（+6 维朝向口径），1×RTX PRO 6000，�
 快版 2 h 只到 17,350 次，按 2.7 次/s 到 18,000 次需 ≈ 1.85 h。
 
 ## change-validate（2026-10-26）
-重新运行（代码 `b660894`，远程 tree 已同步、`src` 无变化，`supermimic.__file__` 指向本 tree，CPU，`CUDA_VISIBLE_DEVICES=""`，机器 B）：
+重新运行（代码 `221ce2e`，远程 tree 已同步、`src` 无变化，`supermimic.__file__` 指向本 tree，CPU，`CUDA_VISIBLE_DEVICES=""`，机器 B）：
 ```bash
 PYTHONPATH=<tree>/src CUDA_VISIBLE_DEVICES="" $PY -m pytest tests/test_optim_load.py tests/test_clip_and_step.py tests/test_replay_labels.py tests/test_quat_error.py tests/test_schedule.py -q
 ```
-rc=0：**10 passed, 1 warning**（6.1 s）。GPU 全部测试：后续分支 `d833b81`（含本 change 全部代码）上 49 passed（2026-10-25，机器 A）。
+rc=0：**10 passed, 1 warning**（6.1 s）。GPU 全部测试：后续分支 `7c18a10`（含本 change 全部代码）上 49 passed（2026-10-25，机器 A）。
 速度与等价证据见上文（B 组基线、C/D/E 组每项对拍与 profile、G 组 T28），以及 BONES-SEED 36k/40k/44k fix 版 vs 加速版同迭代全量评测
 （`2026-10-24-paper-faithful-reproduction` / 本 change 的全量运行：回报差 ±0.007、失败差 ±50，正负交替）。
 
 ## Known gaps
 - 同步未降到个位数、编译缓存持久化 / 共享、重编译计数：推迟（plan"推迟 / 移出范围"）。
-- `b660894` 本身未单独跑一次 GPU 全部测试（只在后续分支上跑过）。
+- `221ce2e` 本身未单独跑一次 GPU 全部测试（只在后续分支上跑过）。
 - 多卡路径未实测。
 - 训练级等价每边单种子。

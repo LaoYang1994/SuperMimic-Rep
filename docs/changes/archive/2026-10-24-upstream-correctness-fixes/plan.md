@@ -5,7 +5,7 @@
   环境 `source <env file>`（Python 在 `$UV_PROJECT_ENVIRONMENT/bin/python`）。代码用 `scripts/remote/sync_code.sh` 同步。
 - **本 change 现在只实现（A–C 组）**；D 组的 GPU 验证要等 change `2026-10-24-paper-faithful-reproduction` 的 BONES-SEED 运行与评测结束
   （GPU 机 `tmp/phaseB/progress.log` 出现 `DONE phase C`）后才开始，期间**不得同步代码到 GPU 机**（会改动正在运行的代码目录）。
-- 分支：从 `d24eda8` 新建 `change/2026-10-24-upstream-correctness-fixes`。（worktree：本地 `.worktrees/2026-10-24-upstream-correctness-fixes`）
+- 分支：从 `64df684` 新建 `change/2026-10-24-upstream-correctness-fixes`。（worktree：本地 `.worktrees/2026-10-24-upstream-correctness-fixes`）
 - 远程运行按 `.claude/skills/remote-exp/SKILL.md`：用**本 worktree 里的** `scripts/remote/sync_code.sh` 同步到远程
   `$SM_REPO/.worktrees/2026-10-24-upstream-correctness-fixes`；在那里运行时
   `export PYTHONPATH=$PWD/src` 并打印 `supermimic.__file__` 确认；日志与 checkpoint 写该远程 tree 的 `logs/`
@@ -15,7 +15,7 @@
 ## Implementation steps
 
 ### A. WM 终止标签对齐（design 问题 1）
-- [x] T1 — 新建分支 `change/2026-10-24-upstream-correctness-fixes`（从 `d24eda8`；是否用 worktree 由 `/change-implement` 决定）· git
+- [x] T1 — 新建分支 `change/2026-10-24-upstream-correctness-fixes`（从 `64df684`；是否用 worktree 由 `/change-implement` 决定）· git
 - [x] T2 — `sample_windows` 的 `done` 改为取转移行自己的标签 `self.done[ee[:-1], tt[:-1]]`，并更新 `WindowBatch.done` 注释为"第 j 个转移结果的终止标签" · `src/supermimic/data/replay_buffer.py`
 - [x] T3 — 更新模块 docstring：`r` 与 `done` 都是同一转移 (s_t, a_t)→s_{t+1} 的标签；终端行只作最后目标状态、不带标签 · `src/supermimic/data/replay_buffer.py`
 - [x] T4 — `record_pre_reset` 写终端行时 `done` 置 0（终止标签已在上一行转移行里），并更新模块 docstring 与注释 · `src/supermimic/data/recorder.py`
@@ -51,7 +51,7 @@
 - `tests/test_replay_labels.py`、`tests/test_quat_error.py`、`tests/test_clip_and_step.py`（新）
 - `docs/changes/archive/2026-10-24-upstream-correctness-fixes/validation.md`（验证阶段）
 
-与活动 change `2026-10-24-paper-faithful-reproduction` 重叠：`training/loop.py`、`imagination/policy_trainer.py`。其代码已在 `d24eda8` 提交，本分支从它拉出，正常合并即可；注意它在 GPU 机上仍有运行中的任务，D 组之前不同步。
+与活动 change `2026-10-24-paper-faithful-reproduction` 重叠：`training/loop.py`、`imagination/policy_trainer.py`。其代码已在 `64df684` 提交，本分支从它拉出，正常合并即可；注意它在 GPU 机上仍有运行中的任务，D 组之前不同步。
 
 ## Tests
 - [x] Unit tests — `test_replay_labels.py`（标签对齐，CPU）、`test_quat_error.py`（前向一致 + 零误差梯度有限）、`test_clip_and_step.py`（非有限跳过）
@@ -74,4 +74,4 @@ none（若 review 认为需要，可在 CONTRACTS 增加数据约定："ReplayBu
 - 单次 2 h 对照受评测噪声影响（同 checkpoint 两次评测单 clip 回报差可达 0.014，相邻 checkpoint 失败数波动大），结论按趋势而非单点下。
 
 ## Rollback plan
-三类修复互不依赖、各自集中在 1–2 个文件：可按组 `git revert`。分支未合并前，回到 `change/2026-10-24-paper-faithful-reproduction`（`d24eda8`）即为修复前状态；修复前的实验结果已记录在 paper-faithful change 的 validation 中。
+三类修复互不依赖、各自集中在 1–2 个文件：可按组 `git revert`。分支未合并前，回到 `change/2026-10-24-paper-faithful-reproduction`（`64df684`）即为修复前状态；修复前的实验结果已记录在 paper-faithful change 的 validation 中。
