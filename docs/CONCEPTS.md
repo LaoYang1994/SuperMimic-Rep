@@ -38,6 +38,13 @@ benchmark 中一条 clip 从首帧整条播放时触发了训练终止条件（�
 尺度归一化后的平方误差，在策略自己的 rollout 上在线测得。论文 Fig. 3c 报 0.007–0.011；
 TensorBoard 中为 `wm/online_nse_8step`。
 
+## 回报采样
+训练环境重置起点的选择（论文附录 D.1）。动作时间轴按 1 s 分 bin，每个 bin 维护完成度 **G_b**：
+该 bin 内各步"折现回报-to-go ÷ 从该步起可达的最大折现回报"的滑动平均（0–1；可达值按 episode 不失败时
+还会持续的步数计，到 clip 结束或时长上限）。重置 = 50% 均匀 + 40% `softmax(−25·G_b)`（困难）+ 10% 历史困难权重。
+未归一化的回报-to-go 受剩余步数支配，会让 clip 末尾的短 bin 显得"困难"（见
+`docs/experiences/training/return-sampler-clip-end-bins.md`）。
+
 ## 想象（imagination）
 冻结世界模型，从 replay buffer 状态出发、由策略驱动、不调用仿真器的 H 步 rollout（默认 H=32）。
 策略梯度经 BPTT 穿过这些步得到。

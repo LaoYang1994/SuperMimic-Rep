@@ -88,3 +88,30 @@ GPU 机：1× RTX PRO 6000 Blackwell 96 GB，容器 64 核 / 128 GiB；torch 2.1
 | proprio_only | 0.522 | 8/40 | 否 |
 - 规则（design Clarifications）：无一达到 0.82 → 取终点回报最高 → anchor_ori_now。与 beyondmimic_seq 之差在噪声内。
 - 与论文 Fig. 4a（0.82 @ 1.2 h，H100）比：同口径同协议下我们 2 h 为 ~0.77；时间对齐与终值都未达到。主要嫌疑：吞吐（1.3 次更新/秒 vs vibed 3.1，见上）——2 h 只做了 ~9.5k 次更新。
+
+## BONES-SEED 全量（T52–T54）：anchor_ori_now，129,511 clip（263.08 h），1×RTX PRO 6000，迭代 = 更新，3 h 时 ckpt（第 13,230 次迭代）
+命令：`sm-train --run-name bones_main --data.library .../bones_seed_compact.pt --env.obs-mode anchor_ori_now --schedule.checkpoint-at-hours 3.0 --schedule.max-hours 3.5 --schedule.checkpoint-interval 4000`；评测训练结束后进行（子集库 2000 条；全量紧凑库 129,511 条）。
+
+| checkpoint | 训练时长 | 评测集 | 回报（论文 §4，均值 / 长度加权） | 失败 |
+|---|---|---|---|---|
+| 4000 | ~0.9 h | 子集 2000 | 0.697 / 0.716 | 81 |
+| 8000 | ~1.8 h | 子集 2000 | 0.859 / 0.862 | 20 |
+| 12000 | ~2.7 h | 子集 2000 | 0.892 / 0.894 | 14 |
+| **h3（13,230）** | **3.0 h** | **全量 129,511** | **0.894 / 0.896** | **1,234** |
+
+论文对照（Fig. 3a / Table A.8，1×H100 3 h）：回报 > 0.90（SONIC 0.90），失败 25（SONIC 179）。
+- 回报 0.894：与 SONIC（0.90）相当，略低于论文 SuperMimic。
+- **失败 1,234 ≫ 25**：差距集中在高难/低姿态动作——side rolls 22/22、flips 54/54、crossed legs 10/10、fire-in-the-hole 17/20、lying/standing up 63/64 全军覆没（论文 1×3 h：2、1、0、3、8）；其余 1,066 条主要是 mohak_turn（120）、idle_crawl（99）、kneeling（97）、reach_jump（52）、high_jump（35）、push_up、inchworm、burpee 等地面/跳跃类。失败的中位步数 162（约 3.2 s）。broad jumps 2/24（优于 SONIC 15）。
+- 训练日志：8 步 WM 误差 2.5 h 起 0.008–0.010（论文 0.007–0.011 ✓）；训练回报 1.8 h 起平台在 0.82–0.83。
+- 解读（推断，待验证）：3 h 只做了 1.32 万次更新（吞吐 1.2 次/秒），按 vibed 同卡吞吐推算论文 3 h 约 3.3 万次；高难动作需要更多更新。另有已知未修 bug（终止标签错位一步，见 change 2026-10-24-upstream-correctness-fixes）会让终止头偏悲观。
+- Table A.8 分组：side rolls / fire-in-the-hole / crossed legs / broad jumps 的组大小与论文一致；flips、lying、dance routine 分组规则不确定（见 T57 记录）。
+
+## 吞吐优化待办（供后续"吞吐优化" change 的 design 使用）
+- **启动编译开销**：每次启动训练的前 60 次迭代用时 422 s（机器 B，LAFAN1），主要是 MuJoCo Warp kernel 编译（单个 cholesky 类 kernel 3.9–6.5 s）加 `torch.compile`；这段时间 GPU 利用率 ≈ 0。候选：把 Warp kernel cache（`~/.cache/warp`）与 inductor cache 放到两台机器共享、可复用的位置，或预热一次后复用。
+- **训练早期 vs 稳态**：第 80–100 次迭代 949 ms/次（B），稳态训练日志约 770 ms/次（A）；profile 需在两个阶段各做一次（稳态用已训练 checkpoint 的权重起步），避免按早期热点优化。
+- **稳态 profile（机器 B，LAFAN1 anchor_ori_now，从 `lafan1_now/ckpt_0008000.pt` 权重起步，`tmp/scripts/profile_train.py`，20 次迭代）**：
+  - 758 ms/迭代（1.32 次/秒，与训练一致）；其中 GPU kernel 时间 343 ms → 利用率约 45%，其余约 415 ms 为 CPU 开销。
+  - 若完全隐藏 CPU 开销：1000/343 ≈ **2.9 次/秒**，与 vibed 同卡 3.1 次/秒吻合 → 与 vibed 的差距基本全部是 CPU 端开销（发射 + 同步），不是算力/带宽。
+  - 每次迭代 kernel 发射约 60,200（策略 41,449 / WM 12,580 / 采样 2,107）；`aten::item` 约 631（WM 297 / 策略 291 / 采样 43）；`cudaStreamSynchronize` 约 810。
+  - 优先级：①定位并去除/延后同步（WM 每批约 30 次 `.item()`，疑在 replay 采样 `int(mask.sum().item())` 与逐批指标）；②把策略前向、观测历史、goal 构造、critic minibatch 编进图以减少 kernel；③共享 Warp / inductor 编译缓存（冷启动约 7 min，热缓存约 1 min）；④replay 采样的 `multinomial`（~21 ms/迭代）。
+  - 早期阶段（随机初始化后第 80–100 次迭代）为 949 ms/迭代，同样的发射/同步量级；稳态与早期瓶颈一致。

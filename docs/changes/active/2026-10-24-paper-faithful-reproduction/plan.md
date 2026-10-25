@@ -94,9 +94,9 @@
 - [x] T51 — 新增 Table A.8 分组脚本：按 clip 名关键词把 benchmark 结果归入 side rolls / flips / fire-in-the-hole / crossed legs / lying-resting-standing / broad jumps / dance routine / 其他，并输出各组失败数 · `scripts/eval_groups.py`
 - [ ] T57 — 在过滤后的 manifest 上校验 T51 的分组大小**精确等于** Table A.8：22 / 44 / 20 / 10 / 99 / 24 / 8 / 129,287（原始名里 `flip` 58 条、`side_roll` 24 条，需由过滤与分组规则共同收敛到 44 / 22；对不上即说明过滤或分组有误）· `scripts/eval_groups.py`
 - [x] T58 — `scripts/eval_benchmark.py` 新增 `--library`（紧凑库路径）：用紧凑库评测（非紧凑全量约 60 GB 显存且需 14 万个 npz，不可行；紧凑库约 7 GB）· `scripts/eval_benchmark.py`
-- [ ] T52 — 训练 BONES-SEED（T42 选定口径，单卡）：`--data.library $BANK/bones_seed/library/bones_seed_compact.pt --schedule.checkpoint-at-hours 3.0 --schedule.max-hours 3.5`；**训练期间不在同卡上评测**（会拖慢训练、扭曲计时；论文也不计评测时间），checkpoint 在训练结束后用子集库评测 · `logs/bones_main/`
-- [ ] T53 — 用 `ckpt_h3.0.pt` 在全量紧凑库上跑 129,514 条 benchmark，得到回报与失败数 · `validation.md`
-- [ ] T54 — 用 T51 输出各组失败表，与 Table A.8 并列；记录 8 步误差 · `validation.md`
+- [x] T52 — 训练 BONES-SEED（T42 选定口径，单卡）：`--data.library $BANK/bones_seed/library/bones_seed_compact.pt --schedule.checkpoint-at-hours 3.0 --schedule.max-hours 3.5`；**训练期间不在同卡上评测**（会拖慢训练、扭曲计时；论文也不计评测时间），checkpoint 在训练结束后用子集库评测 · `logs/bones_main/`
+- [x] T53 — 用 `ckpt_h3.0.pt` 在全量紧凑库上跑 129,514 条 benchmark，得到回报与失败数 · `validation.md`
+- [x] T54 — 用 T51 输出各组失败表，与 Table A.8 并列；记录 8 步误差 · `validation.md`
 
 ## Files to change
 - `scripts/remote/sync_code.sh`（新）：本地→GPU 机代码同步

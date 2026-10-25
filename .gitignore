@@ -16,3 +16,5 @@ experiments/**/outputs/
 
 # local scratch (never commit)
 /tmp/
+/.worktrees/
+/.compute_units

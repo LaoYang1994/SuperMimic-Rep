@@ -21,16 +21,30 @@
    `torchrun`（每 rank 自带仿真与 replay buffer，梯度 all-reduce，lr × √world）。
 3. **评测**：`scripts/eval_benchmark.py` 按附录 F.1 协议整条 clip 确定性播放，输出归一化回报与
    失败数；`scripts/eval_push.py` 推力恢复（§4.3）；`scripts/diag_drift.py` 全局漂移诊断。
-4. **查看**：`scripts/play.py` 交互回放（参考 ghost），`scripts/tb_tail.py` 无 UI 读 TensorBoard。
+4. **查看**：`scripts/play.py` 交互回放（参考 ghost），`scripts/tb_tail.py` 无 UI 读 TensorBoard，
+   `scripts/render_video.py` 无显示器录 MP4（参考 ghost + 每步终止误差，`MUJOCO_GL=egl`），
+   `scripts/sampler_report.py`（仅 CPU）按动作组查看 checkpoint 的回报采样份额。
 
 ## Environments
-- **本地**（Mac 上的 OrbStack Linux，aarch64，无 GPU）：写代码、能访问 GitHub / HuggingFace。
-- **GPU 机**：`ssh <gpu-box>`，代码 `$SM_REPO`，
-  数据 `$SM_BANK`。Ubuntu 24.04 容器、驱动 580 / CUDA 13.0、uv、
-  Python 3.12。**访问不了 GitHub 和 HuggingFace**（PyPI、download.pytorch.org、pypi.nvidia.com、
-  百度镜像可用），git 依赖与数据需在本地取得后 rsync 过去。无 Docker。
+- **本地**（Mac 上的 OrbStack Linux，aarch64，无 GPU）：写代码、能访问 GitHub / HuggingFace；不训练、不跑 CUDA 测试。
 - 依赖：Python 3.12、`uv`；torch ≥ 2.14（cu130）、mujoco / mujoco-warp 3.16、warp-lang ≥ 1.15、
   mjlab 固定在 commit `8bb2bc9`（见 `pyproject.toml` 的 `[tool.uv.sources]`）。
+
+### 远程 GPU 机（remote profile，供 `remote-exp` skill 使用）
+| 项 | 值 |
+|---|---|
+| 连接 | 见仓库根目录的 `.compute_units`（gitignored，列出全部可用机器）；每台机器的每个 shell 先 `source <env file>` |
+| 机器 | 两台同配置单卡机（A、B），共享同一个 PFS；二者不能组成多卡任务 |
+| 远程项目根 | `$SM_REPO`；worktree 对应 `<根>/.worktrees/<change-id>` |
+| 数据根 | `$SM_BANK`（各远程 tree 的 `data` 软链到 `DataBank/supermimic_data`）；数据只放这里，系统盘 `/` 不放数据 |
+| 同步 | `<checkout>/scripts/remote/sync_code.sh`（按所在 checkout 自动映射远程 tree，建 `logs/`、`tmp/`、`data`） |
+| Python | 唯一 venv `<venv>`（系统盘，~7 GB），项目 editable 安装自远程主目录的 `src/`；用 `$UV_PROJECT_ENVIRONMENT/bin/python` |
+| 硬件 / 上限 | 1× RTX PRO 6000 Blackwell 96 GB；容器 128 GiB 内存 / 64 核 |
+| 存储 | `/` 本地盘 98 GB；PFS 为 PFS 网络文件系统 |
+| 网络 | 无 GitHub、无 HuggingFace；PyPI 走镜像（地址见 `.compute_units`）；git 依赖与数据在本地取得后 rsync |
+| 环境 | Ubuntu 24.04 容器、驱动 580 / CUDA 13.0、无 Docker；git/curl/tmux/rsync 已装 |
+
+相关坑见 `docs/experiences/INDEX.md` 的 remote/、sim/ 条目。
 
 ## Repository layout
 ```text
@@ -71,7 +85,10 @@ mjlab 环境：50 Hz 控制、4 个 5 ms 子步。策略观测是论文 Table A.
 goal 是未来 K=10 帧参考（每帧 68 维）；`EnvCfg.anchor_obs=True` 时 goal 再加 9 维锚点相对位姿
 （位置 3 + 6D 旋转，偏离论文）。奖励是 BeyondMimic 跟踪奖励（去掉自碰撞项，关节限位权重 −2），
 终止条件是骨盆高度 > 0.25 m 或倾斜 > 0.8，clip 结束按超时处理。sim context ξ 共 33 维：足底摩擦 1、
-编码器零偏 29、躯干质心偏移 3。重置按 1 s 分箱、基于回报采样。
+编码器零偏 29、躯干质心偏移 3。重置按 1 s 分箱、基于回报采样：每个 bin 存"完成度"G_b（每步折现回报-to-go ÷
+从该步起可达的最大折现回报，0–1，EMA 更新），重置 = 50% 均匀 + 40% `softmax(−25·G_b)` + 10% 历史困难权重
+（见 `CONCEPTS.md#回报采样`）。日志 `sampler/bin_return_mean` 为完成度均值，`sampler/hard_mass_clip_end_bins`
+为困难份额落在 clip 末尾 bin 上的比例。
 
 ### 世界模型（`world_model/`）
 状态 71 维（qpos | qvel）。动力学 MLP（2048×3）预测速度增量后做显式积分；终止头是学出来的，

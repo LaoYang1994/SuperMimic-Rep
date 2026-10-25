@@ -105,12 +105,15 @@ experiences or workflows, stale active changes, missing concepts). Run it at
 milestones (before a release, after a batch of changes lands).
 
 ## Critical rules
+- Compare runs at the same training progress (iterations = updates) first;
+  wall-clock time is reported alongside but is never the basis of a comparison
+  (`docs/CONTRACTS.md#结果报告与论文对照`).
 - Every number compared with the paper or another run states its observation
   setting, dataset, GPU, training time and iteration semantics
   (`docs/CONTRACTS.md#结果报告与论文对照`).
-- Training runs on the GPU box (`ssh <gpu-box>`, code in
+- Training runs on the GPU machines listed in `.compute_units` (gitignored; code in
   `$SM_REPO`, data in
-  `$SM_BANK`). It cannot reach GitHub or HuggingFace:
+  `$SM_BANK`, shared by all machines). It cannot reach GitHub or HuggingFace:
   fetch git dependencies and datasets locally, then rsync them over. The local
   machine has no GPU — never train locally.
 - Ask before starting any large download or transfer (datasets, checkpoints,
@@ -118,3 +121,8 @@ milestones (before a release, after a batch of changes lands).
 - Scratch files go in the repo's `tmp/` (gitignored), never in `/tmp`; on the GPU
   box use `$SM_REPO/tmp/`.
 - `docs/upstream/` is frozen upstream reference material: read it, don't edit it.
+- Anything on the GPU box (sync, train, evaluate, data processing) follows the
+  `remote-exp` skill, with this project's remote profile in
+  `docs/PROJECT.md#远程-gpu-机remote-profile供-remote-exp-skill-使用`: remote trees mirror
+  local `.worktrees/`, worktree runs set `PYTHONPATH` to their own `src/`, no data on
+  the system disk.
