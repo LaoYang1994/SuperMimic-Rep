@@ -85,3 +85,15 @@ def test_world_model_overfits_replay_windows():
         assert torch.isfinite(a.grad).all() and a.grad.abs().sum() > 0
     finally:
         env.close()
+
+
+@pytest.mark.parametrize("obs_mode,dim", [("beyondmimic_seq", 640), ("anchor_ori_now", 686), ("proprio_only", 680), ("anchor_pose9", 689)])
+def test_goal_layout_dims(obs_mode, dim):
+    from supermimic.policy.nets import Critic, CriticCfg, Policy, PolicyCfg, goal_layout
+
+    d, scale = goal_layout(obs_mode, 10)
+    assert d == dim and scale.shape == (dim,)
+    pcfg = PolicyCfg(goal_dim=d, obs_mode=obs_mode, future_frames=10)
+    a = Policy(pcfg)(torch.zeros(2, 930), torch.zeros(2, d))
+    v = Critic(CriticCfg(), pcfg=pcfg)(torch.zeros(2, 71), torch.zeros(2, d), torch.zeros(2, 33), torch.zeros(2, 4))
+    assert a.shape == (2, 29) and v.shape == (2,)

@@ -223,6 +223,25 @@ class MotionLibrary:
     def last_frame_of(self, frame: torch.Tensor) -> torch.Tensor:
         return self.clip_last[self.frame_clip[frame]]
 
+    def window_frames(self, frame: torch.Tensor, k: int) -> torch.Tensor:
+        """(N, k) frames frame..frame+k-1, clamped at each clip's last frame (the goal window)."""
+        offs = torch.arange(k, device=self.device)
+        return torch.minimum(frame[:, None] + offs[None, :], self.last_frame_of(frame)[:, None])
+
+    def joint_window(self, frame: torch.Tensor, k: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Reference joint positions (absolute, as mjlab's MotionCommand.command) and velocities, (N, k, 29) each."""
+        r = self.ref(self.window_frames(frame, k))
+        return r.joint_pos, r.joint_vel
+
+    def anchor_quat_window(self, frame: torch.Tensor, k: int, anchor_body: str) -> torch.Tensor:
+        """(N, k, 4) world orientation (wxyz) of the reference anchor body over the goal window."""
+        idx = self.window_frames(frame, k)
+        if not self.compact:
+            return self.body_quat_w[idx][..., self.body_names.index(anchor_body), :]
+        r71 = self.ref71(idx)
+        qpos = torch.cat([r71[..., 0:3], r71[..., 3:7], r71[..., 7:36]], dim=-1)
+        return self._fk.body_quat_world(qpos, anchor_body)
+
     def goal_window(self, frame: torch.Tensor, k: int) -> torch.Tensor:
         """(N, k*68) goal features of frames frame..frame+k-1, clamped at the clip end."""
         last = self.last_frame_of(frame)

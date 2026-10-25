@@ -17,9 +17,9 @@ from supermimic.envs.mdp.motion_library import discover_npz
 from supermimic.envs.tracking_env_cfg import ANCHOR_BODY, ROOT_BODY, TRACKED_BODIES
 from supermimic.imagination.policy_trainer import PolicyTrainer
 from supermimic.kinematics.g1_fk import G1Kinematics
-from supermimic.policy.nets import Critic, Policy
+from supermimic.policy.nets import Critic, Policy, goal_layout
 from supermimic.training.distributed import allreduce_mean, broadcast_params, finalize, init_distributed, world_size
-from supermimic.training.schedule import cosine_lr
+from supermimic.training.schedule import cosine_lr, sim_steps_this_iter
 from supermimic.world_model.heads import AnalyticHeads
 from supermimic.world_model.wm_trainer import WorldModelTrainer
 from supermimic.world_model.world_model import WorldModel
@@ -28,8 +28,10 @@ from supermimic.world_model.world_model import WorldModel
 class Trainer:
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
-        cfg.policy.goal_dim = cfg.env.future_frames * 68 + (9 if cfg.env.anchor_obs else 0)
-        cfg.policy_trainer.anchor_obs = cfg.env.anchor_obs
+        cfg.policy.obs_mode = cfg.env.obs_mode
+        cfg.policy.future_frames = cfg.env.future_frames
+        cfg.policy.goal_dim = goal_layout(cfg.env.obs_mode, cfg.env.future_frames, cfg.policy.goal_term_scale)[0]
+        cfg.policy_trainer.obs_mode = cfg.env.obs_mode
         self.rank, local_rank, self.world = init_distributed()
         self.is_main = self.rank == 0
         if self.world > 1:
@@ -66,7 +68,7 @@ class Trainer:
                 sampling_mode=cfg.env.sampling_mode,
                 replay_capacity=cfg.env.replay_capacity,
                 compact_library=cfg.env.compact_library,
-                anchor_obs=cfg.env.anchor_obs,
+                obs_mode=cfg.env.obs_mode,
                 seed=cfg.seed + 1000 * self.rank,
             ),
             device=self.device,
@@ -94,9 +96,12 @@ class Trainer:
         # Episode statistics of the training env (paper's "training return").
         self.ep_reward_sum = torch.zeros(env.num_envs, device=self.device)
         self.ep_len = torch.zeros(env.num_envs, device=self.device)
+        self.ep_max_len = torch.ones(env.num_envs, device=self.device)  # steps the episode could last at most
+        self.max_episode_steps = int(round(cfg.env.episode_length_s / env.step_dt))
         self.max_step_reward = heads.reward_cfg.max_step_reward
-        self.iteration = 0
+        self.iteration = 0  # = number of updates (paper Algorithm A.1)
         self.num_updates = 0
+        self.sim_steps = 0  # vectorised simulator steps collected
         self._utd_acc = 0.0
         if cfg.resume is not None:
             self.load(cfg.resume)
@@ -110,6 +115,9 @@ class Trainer:
             {
                 "iteration": self.iteration,
                 "num_updates": self.num_updates,
+                "sim_steps": self.sim_steps,
+                "utd_acc": self._utd_acc,
+                "iteration_semantics": "update",
                 "wm": self.wm.state_dict(),
                 "policy": self.policy.state_dict(),
                 "critic": self.critic.state_dict(),
@@ -135,7 +143,15 @@ class Trainer:
         self.command.bin_memory.copy_(ck["bin_memory"])
         self.iteration = ck["iteration"]
         self.num_updates = ck["num_updates"]
-        print(f"[INFO] resumed from {path} at iteration {self.iteration}")
+        if ck.get("iteration_semantics") == "update":
+            self.sim_steps = ck["sim_steps"]
+            self._utd_acc = ck["utd_acc"]
+        else:
+            # Pre-change checkpoint: its "iteration" counted simulator steps, so the update count is num_updates.
+            print("[WARN] checkpoint predates iteration = update; resuming at iteration = num_updates")
+            self.sim_steps = self.iteration
+            self.iteration = self.num_updates
+        print(f"[INFO] resumed from {path} at iteration {self.iteration} ({self.sim_steps} sim steps)")
 
     # ------------------------------------------------------------------ main loop
 
@@ -143,89 +159,110 @@ class Trainer:
     def act(self, obs) -> torch.Tensor:
         return self.policy(obs["policy"], obs["goal"])
 
+    def _reset_episode_bounds(self, ids: torch.Tensor) -> None:
+        """Longest each (re)started episode can run: until its clip ends or the episode time limit."""
+        frame = self.command.frame[ids]
+        remaining = (self.lib.last_frame_of(frame) - frame + 1).float()  # a full playback takes frames steps
+        self.ep_max_len[ids] = remaining.clamp_max(self.max_episode_steps)
+
+    def _collect(self, obs, stats: dict):
+        """One vectorised simulator step; returns the next observation."""
+        action = self.act(obs)
+        obs, rew, term, tout, extras = self.env.step(action)
+        self.ep_reward_sum += rew
+        self.ep_len += 1
+        done = term | tout
+        if done.any():
+            ids = done.nonzero().squeeze(-1)
+            lens = self.ep_len[ids]
+            # Paper §4: normalize by the largest attainable sum, so early termination scores low.
+            stats["returns"].extend((self.ep_reward_sum[ids] / (self.max_step_reward * self.ep_max_len[ids])).tolist())
+            stats["returns_per_step"].extend((self.ep_reward_sum[ids] / (self.max_step_reward * lens.clamp_min(1))).tolist())
+            stats["lens"].extend(lens.tolist())
+            self.ep_reward_sum[ids] = 0.0
+            self.ep_len[ids] = 0.0
+            self._reset_episode_bounds(ids)  # auto-reset already moved these envs to their new start frame
+        self.sim_steps += 1
+        return obs
+
     def run(self) -> None:
         cfg = self.cfg
         sch = cfg.schedule
         env = self.env
         obs, _ = env.reset()
+        self._reset_episode_bounds(torch.arange(env.num_envs, device=self.device))
         t_start = time.time()
         timers = {"sim": 0.0, "wm": 0.0, "policy": 0.0}
         agg: dict[str, float] = {}
         agg_n = 0
-        finished_returns: list[float] = []
-        finished_lens: list[float] = []
+        stats: dict[str, list[float]] = {"returns": [], "returns_per_step": [], "lens": []}
+        hours_pending = sorted(h for h in sch.checkpoint_at_hours if h * 3600 > 0)
         last_log = time.time()
 
+        t0 = time.perf_counter()
+        while self.sim_steps < sch.warmup_sim_steps:
+            obs = self._collect(obs, stats)
+        torch.cuda.synchronize()
+        timers["sim"] += time.perf_counter() - t0
+
         while self.iteration < sch.total_iterations:
-            # ---------------- (1) collect one vectorised env step
+            # ---------------- (1) collect 1/UTD simulator steps on average
             t0 = time.perf_counter()
-            action = self.act(obs)
-            obs, rew, term, tout, extras = env.step(action)
-            self.ep_reward_sum += rew
-            self.ep_len += 1
-            done = term | tout
-            if done.any():
-                ids = done.nonzero().squeeze(-1)
-                lens = self.ep_len[ids]
-                norm_ret = self.ep_reward_sum[ids] / (self.max_step_reward * lens.clamp_min(1))
-                finished_returns.extend(norm_ret.tolist())
-                finished_lens.extend(lens.tolist())
-                self.ep_reward_sum[ids] = 0.0
-                self.ep_len[ids] = 0.0
+            n_steps, self._utd_acc = sim_steps_this_iter(self._utd_acc, sch.updates_per_env_step)
+            for _ in range(n_steps):
+                obs = self._collect(obs, stats)
             torch.cuda.synchronize()
             timers["sim"] += time.perf_counter() - t0
-            self.iteration += 1
 
-            # ---------------- (2)+(3) updates at the configured update-to-data ratio
-            if self.iteration >= sch.warmup_iterations:
-                self._utd_acc += sch.updates_per_env_step
-                while self._utd_acc >= 1.0:
-                    self._utd_acc -= 1.0
-                    lr = cosine_lr(self.iteration, sch.total_iterations, cfg.wm_trainer.lr, sch.lr_final_ratio, sch.lr_decay_fraction)
-                    self.wm_trainer.set_lr(lr)
-                    self.policy_trainer.set_lr(lr * cfg.policy_trainer.lr / cfg.wm_trainer.lr)
-                    t0 = time.perf_counter()
-                    m_wm = self.wm_trainer.update(self.buffer)
-                    torch.cuda.synchronize()
-                    timers["wm"] += time.perf_counter() - t0
-                    t0 = time.perf_counter()
-                    for _ in range(sch.policy_updates_per_wm_update):
-                        m_pi = self.policy_trainer.update(self.buffer)
-                    torch.cuda.synchronize()
-                    timers["policy"] += time.perf_counter() - t0
-                    self.num_updates += 1
-                    for k, v in m_wm.items():
-                        agg[f"wm/{k}"] = agg.get(f"wm/{k}", 0.0) + v
-                    for k, v in m_pi.items():
-                        agg[f"policy/{k}"] = agg.get(f"policy/{k}", 0.0) + v
-                    agg["lr"] = lr
-                    agg_n += 1
+            # ---------------- (2) fit the world model, (3) improve the policy: one iteration = one update
+            lr = cosine_lr(self.iteration, sch.total_iterations, cfg.wm_trainer.lr, sch.lr_final_ratio, sch.lr_decay_fraction)
+            self.wm_trainer.set_lr(lr)
+            self.policy_trainer.set_lr(lr * cfg.policy_trainer.lr / cfg.wm_trainer.lr)
+            t0 = time.perf_counter()
+            m_wm = self.wm_trainer.update(self.buffer)
+            torch.cuda.synchronize()
+            timers["wm"] += time.perf_counter() - t0
+            t0 = time.perf_counter()
+            for _ in range(sch.policy_updates_per_wm_update):
+                m_pi = self.policy_trainer.update(self.buffer)
+            torch.cuda.synchronize()
+            timers["policy"] += time.perf_counter() - t0
+            self.num_updates += 1
+            self.iteration += 1
+            for k, v in m_wm.items():
+                agg[f"wm/{k}"] = agg.get(f"wm/{k}", 0.0) + v
+            for k, v in m_pi.items():
+                agg[f"policy/{k}"] = agg.get(f"policy/{k}", 0.0) + v
+            agg["lr"] = lr
+            agg_n += 1
 
             # ---------------- logging / checkpoints
             if self.iteration % sch.log_interval == 0:
                 it = self.iteration
                 elapsed = time.time() - t_start
+                finished = stats["returns"]
                 if self.world > 1:
                     # Every rank must issue the same collectives: reduce (sum, count) unconditionally.
-                    tot = allreduce_mean(float(sum(finished_returns))) * self.world
-                    cnt = allreduce_mean(float(len(finished_returns))) * self.world
-                    finished_returns = [tot / cnt] if cnt > 0 else []
+                    tot = allreduce_mean(float(sum(finished))) * self.world
+                    tot_ps = allreduce_mean(float(sum(stats["returns_per_step"]))) * self.world
+                    cnt = allreduce_mean(float(len(finished))) * self.world
+                    stats["returns"] = [tot / cnt] if cnt > 0 else []
+                    stats["returns_per_step"] = [tot_ps / cnt] if cnt > 0 else []
                     n_finished = int(round(cnt))
                 else:
-                    n_finished = len(finished_returns)
+                    n_finished = len(finished)
                 if not self.is_main:
                     agg, agg_n = {}, 0
-                    finished_returns, finished_lens = [], []
                     timers = {k: 0.0 for k in timers}
                 elif agg_n > 0:
                     for k, v in agg.items():
                         self.writer.add_scalar(k, v / (agg_n if k != "lr" else 1), it)
-                if not self.is_main:
-                    tr = float("nan")
-                elif finished_returns:
-                    tr = sum(finished_returns) / len(finished_returns)
+                if self.is_main and stats["returns"]:
+                    tr = sum(stats["returns"]) / len(stats["returns"])
                     self.writer.add_scalar("train/episode_norm_return", tr, it)
-                    self.writer.add_scalar("train/episode_len", sum(finished_lens) / max(len(finished_lens), 1), it)
+                    self.writer.add_scalar("train/episode_norm_return_per_step", sum(stats["returns_per_step"]) / len(stats["returns_per_step"]), it)
+                    if stats["lens"]:
+                        self.writer.add_scalar("train/episode_len", sum(stats["lens"]) / len(stats["lens"]), it)
                 else:
                     tr = float("nan")
                 with torch.no_grad():
@@ -240,12 +277,13 @@ class Trainer:
                         self.writer.add_scalar(f"time/{k}_s_per_iter", v / sch.log_interval, it)
                     self.writer.add_scalar("time/hours", elapsed / 3600, it)
                     self.writer.add_scalar("time/updates", self.num_updates, it)
+                    self.writer.add_scalar("time/sim_steps", self.sim_steps, it)
                     self.writer.add_scalar("sampler/entropy", float(self.command.metrics["sampling_entropy"][0]), it)
                     self.writer.add_scalar("sampler/bin_return_mean", float(self.command.bin_return.mean()), it)
                     dt_log = time.time() - last_log
                     last_log = time.time()
                     msg = (
-                        f"it {it} | {elapsed/3600:.2f} h | {sch.log_interval / dt_log:.1f} it/s | updates {self.num_updates} | "
+                        f"it {it} | sim steps {self.sim_steps} | {elapsed/3600:.2f} h | {sch.log_interval / dt_log:.1f} it/s | "
                         f"train_ret {tr:.3f} (n={n_finished}) | "
                         f"wm nse1 {agg.get('wm/nse_1step', float('nan'))/max(agg_n,1):.4f} nse8 {(float(err[-1]) if err is not None else float('nan')):.4f} | "
                         f"imag_ret {agg.get('policy/imag_return_undisc', float('nan'))/max(agg_n,1):.3f} surv {agg.get('policy/imag_survival_H', float('nan'))/max(agg_n,1):.3f} | "
@@ -253,11 +291,16 @@ class Trainer:
                     )
                     print(msg, flush=True)
                 agg, agg_n = {}, 0
-                finished_returns, finished_lens = [], []
+                stats = {k: [] for k in stats}
                 timers = {k: 0.0 for k in timers}
             if self.iteration % sch.checkpoint_interval == 0:
                 self.save("ckpt_latest.pt")
                 self.save(f"ckpt_{self.iteration:07d}.pt")
+            if hours_pending and (time.time() - t_start) / 3600 >= hours_pending[0]:
+                h = hours_pending.pop(0)
+                self.save(f"ckpt_h{h:g}.pt")
+                if self.is_main:
+                    print(f"[INFO] {h:g} h checkpoint at iteration {self.iteration}", flush=True)
             if sch.max_hours is not None and self.iteration % sch.log_interval == 0:
                 stop = float((time.time() - t_start) / 3600 > sch.max_hours)
                 if self.world > 1:

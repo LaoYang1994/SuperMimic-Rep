@@ -4,7 +4,7 @@
 
 从零复现论文 **SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model**（[arXiv:2610.28480](https://arxiv.org/abs/2610.28480)，CoRL 2026）：一个学习得到的可微世界模型 + 短视野 BPTT actor-critic，用于 Unitree G1 人形全身动作跟踪。底座是 [mjlab](https://github.com/mujocolab/mjlab)（MuJoCo Warp），固定到 commit `8bb2bc9`；不使用 rsl_rl，世界模型、BPTT 训练器、多 clip 动作库、基于回报的重置采样、评测全部自己实现。
 
-> 状态（2026-10-21）：LAFAN1 上达到论文量级（M3），BONES-SEED 全量数据管线与单卡训练完成，多卡训练已跑通；正式结果正在按论文观测口径重跑（e6/e7）。详见 [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md)。
+> 状态（2026-10-21）：LAFAN1 上达到论文量级（M3），BONES-SEED 全量数据管线与单卡训练完成，多卡训练已跑通；正式结果正在按论文观测口径重跑（e6/e7）。详见 [docs/upstream/EXPERIMENTS.md](docs/upstream/EXPERIMENTS.md)。
 
 ## 结果速览
 
@@ -29,10 +29,10 @@
 
 | 文件 | 内容 |
 |---|---|
-| [docs/PAPER_SPEC.md](docs/PAPER_SPEC.md) | 论文全部数值、公式、协议的逐条转录；"未指明"清单 U1–U20 |
-| [docs/REPRODUCTION_PLAN.md](docs/REPRODUCTION_PLAN.md) | 复现计划：目标、环境、设计决策 D1–D20、repo 骨架、分阶段步骤、测试、预算、风险 |
-| [docs/REVIEW_LOG.md](docs/REVIEW_LOG.md) | 计划的自审与两轮对抗审查记录 |
-| [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) | 实验日志：每个实验的配置、曲线、评测、偏离计划的决定、踩坑记录 |
+| [docs/upstream/PAPER_SPEC.md](docs/upstream/PAPER_SPEC.md) | 论文全部数值、公式、协议的逐条转录；"未指明"清单 U1–U20 |
+| [docs/upstream/REPRODUCTION_PLAN.md](docs/upstream/REPRODUCTION_PLAN.md) | 复现计划：目标、环境、设计决策 D1–D20、repo 骨架、分阶段步骤、测试、预算、风险 |
+| [docs/upstream/REVIEW_LOG.md](docs/upstream/REVIEW_LOG.md) | 计划的自审与两轮对抗审查记录 |
+| [docs/upstream/EXPERIMENTS.md](docs/upstream/EXPERIMENTS.md) | 实验日志：每个实验的配置、曲线、评测、偏离计划的决定、踩坑记录 |
 | 论文原文 | [arXiv:2610.28480](https://arxiv.org/abs/2610.28480)（不随仓库分发 PDF） |
 
 ## 代码结构
@@ -116,7 +116,7 @@ env -u PYTHONPATH uv run python scripts/play.py --ckpt logs/e7/ckpt_latest.pt --
 ## 与论文的对应及已知差异
 
 - 实现了 Algorithm A.1 全流程、Table A.1–A.6 的观测/奖励/终止/网络/超参、Appendix F 评测协议、D 节域随机化（sim context ξ）。
-- 论文未指明之处（U1–U20）的取舍记录在 `REPRODUCTION_PLAN.md` 第 4 节；实测后改动的决定记录在 `EXPERIMENTS.md`。
+- 论文未指明之处（U1–U20）的取舍记录在 `docs/upstream/REPRODUCTION_PLAN.md` 第 4 节；实测后改动的决定记录在 `docs/upstream/EXPERIMENTS.md`。
 - 未做：速度接口与蒸馏、PPO-Sim/PPO-WM 基线、H×critic 消融、ONNX 导出、真机。
 - mjlab 的 `csv_to_npz` 四元数 slerp 在相邻帧几乎相同时会提前返回（姿态滞后一帧），本仓库用自己的向量化 slerp（与 scipy 一致到 1e-9）。
 - MuJoCo Warp 的 solver 溢出 printf 是编译期常量，必须在 `put_model` 后、图捕获前关闭，否则早期策略每步触发、仿真慢 10×。

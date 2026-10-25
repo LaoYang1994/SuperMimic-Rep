@@ -102,6 +102,27 @@ class G1Kinematics:
     def body_indices(self, names) -> torch.Tensor:
         return torch.tensor([self.body_names.index(n) for n in names], device=self.device)
 
+    def body_quat_world(self, qpos: torch.Tensor, name: str) -> torch.Tensor:
+        """World orientation (wxyz) of one body from qpos, composing only its root-to-body chain.
+
+        Same result as ``forward(qpos)["quat"][..., body_index(name), :]`` at a fraction of the cost
+        (orientation needs no positions or velocities).
+        """
+        chain = []
+        i = self.body_index(name)
+        while i > 0:
+            chain.append(i)
+            i = self.links[i].parent_index
+        batch = qpos.shape[:-1]
+        q = quat_normalize(qpos[..., 3:7])
+        for i in reversed(chain):
+            q = quat_mul(q, self.body_quat[i].expand(*batch, 4))
+            l = self.links[i]
+            if l.joint_type == mujoco.mjtJoint.mjJNT_HINGE:
+                angle = qpos[..., l.qpos_adr] - self.qpos0[i]
+                q = quat_mul(q, quat_from_angle_axis(angle, self.jnt_axis[i].expand(*batch, 3)))
+        return q
+
     # ------------------------------------------------------------------ core
 
     def forward(self, qpos: torch.Tensor, qvel: torch.Tensor | None = None):

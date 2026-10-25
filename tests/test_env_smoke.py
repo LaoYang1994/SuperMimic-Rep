@@ -21,7 +21,8 @@ def env():
 
     files = discover_npz(NPZ, names=["walk1_subject1", "dance1_subject1", "jumps1_subject1"])
     assert len(files) == 3
-    args = SuperMimicEnvCfgArgs(npz_files=[str(f) for f in files], num_envs=32, replay_capacity=64, seed=1)
+    # Reference-only goal (68 per frame), so the goal columns below index lib.goal_feat directly.
+    args = SuperMimicEnvCfgArgs(npz_files=[str(f) for f in files], num_envs=32, replay_capacity=64, seed=1, obs_mode="proprio_only")
     e = make_env(args, device="cuda:0")
     yield e
     e.close()

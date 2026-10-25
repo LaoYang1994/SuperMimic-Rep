@@ -34,3 +34,20 @@ def test_compact_matches_full():
     g_full, g_32 = full.goal_window(f, 10), comp32.goal_window(f, 10)
     np.testing.assert_allclose(g_32.cpu().numpy(), g_full.cpu().numpy(), atol=1e-5)
     assert comp16.summary().startswith("MotionLibrary(compact)")
+
+
+def test_compact_goal_windows_match_full():
+    """beyondmimic_seq inputs: the compact library's chain-FK anchor orientation and joint windows."""
+    from supermimic.envs.mdp.motion_library import MotionLibrary, discover_npz
+    from supermimic.envs.tracking_env_cfg import ANCHOR_BODY, TRACKED_BODIES
+
+    files = discover_npz(NPZ, names=["walk1_subject1", "jumps1_subject1"])
+    q0 = torch.zeros(29)
+    full = MotionLibrary(files, TRACKED_BODIES, q0, device="cuda", compact=False)
+    comp = MotionLibrary(files, TRACKED_BODIES, q0, device="cuda", compact=True, store_dtype=torch.float32)
+    f = torch.randint(0, full.num_frames, (512,), device="cuda")
+    qa, qb = full.anchor_quat_window(f, 10, ANCHOR_BODY), comp.anchor_quat_window(f, 10, ANCHOR_BODY)
+    sign = torch.sign((qa * qb).sum(-1, keepdim=True))
+    np.testing.assert_allclose((qb * sign).cpu().numpy(), qa.cpu().numpy(), atol=2e-5)
+    for a, b in zip(full.joint_window(f, 10), comp.joint_window(f, 10)):
+        np.testing.assert_allclose(b.cpu().numpy(), a.cpu().numpy(), atol=1e-6)
