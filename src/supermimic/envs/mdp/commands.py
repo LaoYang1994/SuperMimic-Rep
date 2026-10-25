@@ -29,6 +29,7 @@ from mjlab.utils.lab_api.math import (
 )
 
 from supermimic.envs.mdp.motion_library import MotionLibrary
+from supermimic.envs.mdp.sampler_math import normalized_returns_to_go
 
 if TYPE_CHECKING:
     from mjlab.entity import Entity
@@ -67,9 +68,11 @@ class MultiClipMotionCommand(CommandTerm):
         self.body_quat_relative_w[:, :, 0] = 1.0
 
         # Return-based reset sampling state.
-        self.bin_return = torch.full((lib.num_bins,), cfg.g_max, device=self.device)
+        # Per-bin completion: discounted return-to-go / attainable return-to-go, in [0, 1] (1 = untouched).
+        self.bin_return = torch.full((lib.num_bins,), 1.0, device=self.device)
         self.bin_memory = torch.full((lib.num_bins,), 1.0 / lib.num_bins, device=self.device)
-        self.max_ep_steps = min(int(math.ceil(env.cfg.episode_length_s / env.step_dt)) + 2, cfg.max_logged_steps)
+        self.time_limit_steps = int(math.ceil(env.cfg.episode_length_s / env.step_dt))
+        self.max_ep_steps = min(self.time_limit_steps + 2, cfg.max_logged_steps)
         # Evaluation hook: when >= 0, the next reset of that env starts exactly at this global frame.
         self.forced_frame = torch.full((n,), -1, dtype=torch.long, device=self.device)
         self.ep_rewards = torch.zeros(n, self.max_ep_steps, device=self.device)
@@ -79,7 +82,7 @@ class MultiClipMotionCommand(CommandTerm):
         self.bootstrap_fn = None  # optional: env_ids -> value estimate for truncated episodes
 
         for k in ("error_anchor_pos", "error_anchor_rot", "error_body_pos", "error_body_rot",
-                  "error_joint_pos", "error_joint_vel", "sampling_entropy", "episode_return_to_go"):
+                  "error_joint_pos", "error_joint_vel", "sampling_entropy", "episode_return_to_go", "hard_mass_clip_end"):
             self.metrics[k] = torch.zeros(n, device=self.device)
 
     # ------------------------------------------------------------------ reference (mjlab MotionCommand API)
@@ -231,9 +234,14 @@ class MultiClipMotionCommand(CommandTerm):
             else:
                 remaining = lens[:, None] - torch.arange(T, device=self.device)[None, :]
                 tmask = tmask & ~(truncated[:, None] & (remaining < cfg.min_remaining_steps))
+        # Length each episode would have had without failing: clip end or time limit (exact for both; a failed
+        # episode adds the steps from its terminal frame to the clip end, capped by the time limit).
+        rem_term = self.library.last_frame_of(self.frame[env_ids]) - self.frame[env_ids]
+        n_star = torch.where(terminated, torch.minimum(lens + rem_term, torch.full_like(lens, self.time_limit_steps)), lens)
+        g_norm = normalized_returns_to_go(rtg, n_star, cfg.gamma, cfg.g_max)
         valid = tmask.reshape(-1)
         b = bins.reshape(-1)[valid]
-        g = rtg.reshape(-1)[valid].float()
+        g = g_norm.reshape(-1)[valid].float()
         if b.numel() == 0:
             return
         sums = torch.zeros(self.library.num_bins, device=self.device).index_add_(0, b, g)
@@ -257,7 +265,9 @@ class MultiClipMotionCommand(CommandTerm):
             f = torch.randint(0, lib.num_frames, (n,), device=self.device)
             return torch.minimum(f, lib.last_frame_of(f) - 2).clamp_min(0)
         assert cfg.sampling_mode == "return"
-        hard = torch.softmax(-cfg.softmax_temp * self.bin_return / cfg.g_max, dim=0)
+        # Paper: softmax_b(-25 G_b / G_max); bin_return already holds G_b relative to the attainable return.
+        hard = torch.softmax(-cfg.softmax_temp * self.bin_return, dim=0)
+        self.metrics["hard_mass_clip_end"][:] = (hard * lib.bin_is_clip_end).sum()
         self.bin_memory = (1 - cfg.memory_alpha) * self.bin_memory + cfg.memory_alpha * hard
         p = (
             cfg.uniform_ratio / lib.num_bins
@@ -412,7 +422,7 @@ class MultiClipMotionCommandCfg(CommandTermCfg):
     hard_ratio: float = 0.4
     memory_ratio: float = 0.1
     softmax_temp: float = 25.0
-    g_max: float = 10.0
+    g_max: float = 10.0  # largest attainable discounted return (max step reward / (1 - gamma)); normalizes bin returns
     gamma: float = 0.99
     ema_alpha: float = 0.05
     memory_alpha: float = 0.01

@@ -166,6 +166,8 @@ class MotionLibrary:
         self.bin_start = self.clip_start[bin_clip] + local_bin * self.bin_frames
         self.bin_end = torch.minimum(self.bin_start + self.bin_frames, self.clip_start[bin_clip] + self.clip_len[bin_clip])
         self.bin_clip = bin_clip
+        self.bin_is_clip_end = torch.zeros(self.num_bins, dtype=torch.bool, device=self.device)
+        self.bin_is_clip_end[self.clip_bin_offset + bins_per_clip - 1] = True  # last bin of each clip
 
     # ------------------------------------------------------------------ per-frame access
 

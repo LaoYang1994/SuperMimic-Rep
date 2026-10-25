@@ -14,6 +14,7 @@ from supermimic.config import TrainConfig
 from supermimic.data.motion_convert import load_g1_model
 from supermimic.envs import SuperMimicEnvCfgArgs, make_env
 from supermimic.envs.mdp.motion_library import discover_npz
+from supermimic.envs.mdp.sampler_math import bin_return_from_checkpoint
 from supermimic.envs.tracking_env_cfg import ANCHOR_BODY, ROOT_BODY, TRACKED_BODIES
 from supermimic.imagination.policy_trainer import PolicyTrainer
 from supermimic.kinematics.g1_fk import G1Kinematics
@@ -24,6 +25,7 @@ from supermimic.training.schedule import cosine_lr, sim_steps_this_iter
 from supermimic.world_model.heads import AnalyticHeads
 from supermimic.world_model.wm_trainer import WorldModelTrainer
 from supermimic.world_model.world_model import WorldModel
+
 
 
 class Trainer:
@@ -127,6 +129,7 @@ class Trainer:
                 "critic_opt": self.policy_trainer.critic_opt.state_dict(),
                 "bin_return": self.command.bin_return,
                 "bin_memory": self.command.bin_memory,
+                "bin_return_normalized": True,
                 "config": asdict(self.cfg),
             },
             self.log_dir / name,
@@ -140,7 +143,7 @@ class Trainer:
         load_optimizer_state(self.wm_trainer.opt, ck["wm_opt"])
         load_optimizer_state(self.policy_trainer.opt, ck["policy_opt"])
         load_optimizer_state(self.policy_trainer.critic_opt, ck["critic_opt"])
-        self.command.bin_return.copy_(ck["bin_return"])
+        self.command.bin_return.copy_(bin_return_from_checkpoint(ck, self.command.cfg.g_max))
         self.command.bin_memory.copy_(ck["bin_memory"])
         self.iteration = ck["iteration"]
         self.num_updates = ck["num_updates"]
@@ -282,6 +285,7 @@ class Trainer:
                     self.writer.add_scalar("time/sim_steps", self.sim_steps, it)
                     self.writer.add_scalar("sampler/entropy", float(self.command.metrics["sampling_entropy"][0]), it)
                     self.writer.add_scalar("sampler/bin_return_mean", float(self.command.bin_return.mean()), it)
+                    self.writer.add_scalar("sampler/hard_mass_clip_end_bins", float(self.command.metrics["hard_mass_clip_end"][0]), it)
                     dt_log = time.time() - last_log
                     last_log = time.time()
                     msg = (
