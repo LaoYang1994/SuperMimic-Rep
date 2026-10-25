@@ -18,3 +18,4 @@ experiments/**/outputs/
 /tmp/
 /.worktrees/
 /.compute_units
+/scripts/remote/

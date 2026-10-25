@@ -35,14 +35,14 @@
 ### 远程 GPU 机（remote profile，供 `remote-exp` skill 使用）
 | 项 | 值 |
 |---|---|
-| 连接 | 见仓库根目录的 `.compute_units`（gitignored，列出全部可用机器）；每台机器的每个 shell 先 `source <env file>` |
+| 连接 | 见仓库根目录的 `.compute_units`（gitignored：每台机器的 ssh，以及远程项目根、数据根、env 文件、venv 的位置）；每个 shell 先 source 其中的 env 文件，它设置 `$SM_REPO`、`$SM_BANK`、`$UV_PROJECT_ENVIRONMENT` 并清空 `PYTHONPATH` |
 | 机器 | 两台同配置单卡机（A、B），共享同一个 PFS；二者不能组成多卡任务 |
 | 远程项目根 | `$SM_REPO`；worktree 对应 `<根>/.worktrees/<change-id>` |
-| 数据根 | `$SM_BANK`（各远程 tree 的 `data` 软链到 `DataBank/supermimic_data`）；数据只放这里，系统盘 `/` 不放数据 |
-| 同步 | `<checkout>/scripts/remote/sync_code.sh`（按所在 checkout 自动映射远程 tree，建 `logs/`、`tmp/`、`data`） |
-| Python | 唯一 venv `<venv>`（系统盘，~7 GB），项目 editable 安装自远程主目录的 `src/`；用 `$UV_PROJECT_ENVIRONMENT/bin/python` |
+| 数据根 | `$SM_BANK`（各远程 tree 的 `data` 软链到 `$SM_BANK/supermimic_data`）；数据只放这里，系统盘不放数据 |
+| 同步 | 本地工具 `scripts/remote/sync_code.sh`（gitignored，不在仓库中；按所在 checkout 映射远程 tree，建 `logs/`、`tmp/`、`data`） |
+| Python | 唯一 venv（位置见 `.compute_units`，系统盘，~7 GB），项目 editable 安装自 `$SM_REPO/src`；用 `$UV_PROJECT_ENVIRONMENT/bin/python` |
 | 硬件 / 上限 | 1× RTX PRO 6000 Blackwell 96 GB；容器 128 GiB 内存 / 64 核 |
-| 存储 | `/` 本地盘 98 GB；PFS 为 PFS 网络文件系统 |
+| 存储 | 本地系统盘 98 GB（不放数据）；代码、数据、日志都在各机器共享的 PFS 网络文件系统上（建小文件慢） |
 | 网络 | 无 GitHub、无 HuggingFace；PyPI 走镜像（地址见 `.compute_units`）；git 依赖与数据在本地取得后 rsync |
 | 环境 | Ubuntu 24.04 容器、驱动 580 / CUDA 13.0、无 Docker；git/curl/tmux/rsync 已装 |
 
