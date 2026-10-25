@@ -21,6 +21,10 @@ benchmark 中一条 clip 从首帧整条播放时触发了训练终止条件（�
 - **+9 维位姿**：再加 3 维参考锚点位置（`motion_anchor_pos_b`），需要状态估计。
   上游 `EnvCfg.anchor_obs=True` 即此口径。
 
+代码里由 `EnvCfg.obs_mode` 选择：`beyondmimic_seq`（论文口径：goal 为 10 帧 [关节位置 29、关节速度 29、参考锚点朝向 6D]）、
+`anchor_ori_now`（+6 维朝向：10 帧参考特征 + 当前帧锚点朝向 6D）、`proprio_only`（Table A.1 字面：只有 10 帧参考特征）、
+`anchor_pose9`（+9 维位姿）。
+
 ## Sim context ξ
 每个 episode 的域随机化参数，作为世界模型和 critic 的输入（论文 Table A.3）。本仓库为 33 维：
 足底摩擦 1 + 关节编码器零偏 29 + 躯干质心偏移 3。世界模型是确定性的，随机性全部来自 ξ 和
@@ -28,10 +32,10 @@ benchmark 中一条 clip 从首帧整条播放时触发了训练终止条件（�
 
 ## 迭代与 UTD
 **UTD**（update-to-data ratio）= 每个向量化仿真步对应的模型更新次数，论文取 0.4。
-**迭代**的含义论文没写清，存在两种解读：
-- 一次迭代 = 一个仿真步（上游 CuboiLeo，`training/loop.py`）：320k 迭代 ≈ 128k 次更新；
-- 一次迭代 = 一次更新（含 2.5 个仿真步，vibed 的做法）：320k 迭代 = 320k 次更新。
-它影响学习率衰减节奏和 checkpoint 编号能否与论文对齐。
+**迭代**在本仓库固定为**一次更新**（一次世界模型更新 + 一次策略 / critic 更新，平均伴随 1/UTD = 2.5 个仿真步；
+论文 Algorithm A.1 "both ω and θ update every iteration"）：320k 迭代 = 320k 次更新，学习率调度与 checkpoint 编号都按它计。
+上游 CuboiLeo 曾把一个仿真步算作一次迭代（320k 迭代 ≈ 128k 次更新），其数字不能与本仓库直接对照。
+结果比较一律先按相同迭代次数对齐（`CONTRACTS.md#结果报告与论文对照`）。
 
 ## 世界模型 8 步预测误差
 从 replay 中的真实状态出发，用记录的动作自回归滚 8 步，预测状态与真实状态之差按预设名义

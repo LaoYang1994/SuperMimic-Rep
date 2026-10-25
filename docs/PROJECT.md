@@ -84,8 +84,8 @@ SuperMimic/
 ## Core modules
 ### 环境层（`envs/`）
 mjlab 环境：50 Hz 控制、4 个 5 ms 子步。策略观测是论文 Table A.1 的 93 维本体项 × 10 帧历史，
-goal 是未来 K=10 帧参考（每帧 68 维）；`EnvCfg.anchor_obs=True` 时 goal 再加 9 维锚点相对位姿
-（位置 3 + 6D 旋转，偏离论文）。奖励是 BeyondMimic 跟踪奖励（去掉自碰撞项，关节限位权重 −2），
+goal 是未来 K=10 帧参考，内容由 `EnvCfg.obs_mode` 决定（四种观测口径，见 `CONCEPTS.md#观测口径`；
+默认实验用 `beyondmimic_seq` 与 `anchor_ori_now`）。域随机化在 startup 时按环境采样。奖励是 BeyondMimic 跟踪奖励（去掉自碰撞项，关节限位权重 −2），
 终止条件是骨盆高度 > 0.25 m 或倾斜 > 0.8，clip 结束按超时处理。sim context ξ 共 33 维：足底摩擦 1、
 编码器零偏 29、躯干质心偏移 3。重置按 1 s 分箱、基于回报采样：每个 bin 存"完成度"G_b（每步折现回报-to-go ÷
 从该步起可达的最大折现回报，0–1，EMA 更新），重置 = 50% 均匀 + 40% `softmax(−25·G_b)` + 10% 历史困难权重
@@ -105,8 +105,9 @@ WM 的 8 步窗口损失同样（`WMTrainerCfg.compile`）；三个优化器为 
 LAFAN1 371 ms/迭代（2.70 次/s）、BONES-SEED 2.4 次/s（change 2026-10-24-training-throughput；原 1.33 / 1.2 次/s）。
 
 ### 训练循环（`training/loop.py`）
-一次"迭代"等于一个向量化仿真步；更新按 UTD=0.4 的比例累加触发（上游计划 D12 的解读 A）。
-默认总长 320k 迭代，cosine 衰减到 0.03×，衰减区间占总长的 250k/320k。
+一次"迭代"等于一次更新（世界模型 + 策略 / critic 各一次），其间按 UTD=0.4 累加采集，平均 2.5 个仿真步
+（`CONCEPTS.md#迭代与-utd`）。默认总长 320k 迭代，cosine 衰减到 0.03×，衰减区间占总长的 250k/320k；
+学习率调度只依赖迭代次数，`--schedule.max-hours` 只决定何时停止。
 
 ## Features
 ### LAFAN1 跟踪训练（论文 Fig. 4a 设定）
@@ -119,18 +120,23 @@ Supported:
 - 上游正确性修复（终止标签对齐、四元数误差零点梯度、resume 补 warmup、非有限梯度跳过，change
   2026-10-24-upstream-correctness-fixes）：同迭代对照下早期学得更快，9,600 次迭代时回报与修复前持平（0.768 vs 0.766）。
 
+- 本仓库（1×RTX PRO 6000，`anchor_ori_now`，迭代 = 更新）：2 h / 9,600 次迭代 0.768；第 18,000 次迭代 0.821（1/40 失败），
+  加速后约 1.85 h 可到 18,000 次（changes 2026-10-24-paper-faithful-reproduction、2026-10-24-training-throughput）。
+
 Not supported:
-- 尚未在本仓库的 GPU 机上复现；尚未与论文口径对上 0.82 @ 1.2 h。
+- 论文口径 `beyondmimic_seq` 尚未跑到 18k 次迭代；达到 0.82 所需时间仍长于论文 1.2 h（H100）。
 
 ### BONES-SEED 全量训练（论文 Fig. 3a / Table A.8 设定）
 Status: partial
 
 Supported:
-- 附录 E 两道过滤（上游得到 129,943 条 / 263.75 h，论文 129,514 / 264.56 h）、紧凑库、
-  2000 条子集评测、多卡数据并行。
+- 附录 E 两道过滤：名字过滤 129,667（与论文一致）、可行性过滤 129,511 / 263.08 h（论文 129,514 / 264.56 h）；
+  流式转换、紧凑库（6.72 GB，常驻显存）、全量 benchmark（`--library`）、Table A.8 分组统计（`scripts/eval_groups.py`）。
+- 全量结果（`beyondmimic_seq`，1×RTX PRO 6000，迭代 = 更新，修复 + 加速 + 回报采样修正）：第 44k 次迭代回报 0.934、
+  失败 210（SONIC 0.90 / 179，论文 1 卡 3 h >0.90 / 25）。
 
 Not supported:
-- 全量 129,514 条 benchmark 与 SONIC 失败数对照尚未完成；数据仍在传往 GPU 机。
+- 失败数未达到论文（25）；Table A.8 中 flips / lying / dance routine 的分组规则无法从论文确定。
 
 ### 其他评测
 Status: partial

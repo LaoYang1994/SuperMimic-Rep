@@ -115,3 +115,27 @@ GPU 机：1× RTX PRO 6000 Blackwell 96 GB，容器 64 核 / 128 GiB；torch 2.1
   - 每次迭代 kernel 发射约 60,200（策略 41,449 / WM 12,580 / 采样 2,107）；`aten::item` 约 631（WM 297 / 策略 291 / 采样 43）；`cudaStreamSynchronize` 约 810。
   - 优先级：①定位并去除/延后同步（WM 每批约 30 次 `.item()`，疑在 replay 采样 `int(mask.sum().item())` 与逐批指标）；②把策略前向、观测历史、goal 构造、critic minibatch 编进图以减少 kernel；③共享 Warp / inductor 编译缓存（冷启动约 7 min，热缓存约 1 min）；④replay 采样的 `multinomial`（~21 ms/迭代）。
   - 早期阶段（随机初始化后第 80–100 次迭代）为 949 ms/迭代，同样的发射/同步量级；稳态与早期瓶颈一致。
+
+## change-validate（2026-10-26）
+重新运行（远程主 tree 的 `src`，代码 `d24eda8`，`supermimic.__file__` 已核对，CPU，`CUDA_VISIBLE_DEVICES=""`，机器 B）：
+```bash
+PYTHONPATH=$SM_REPO/src CUDA_VISIBLE_DEVICES="" $PY -m pytest tests/test_schedule.py tests/test_analytic_heads.py tests/test_motion_library_compact.py tests/test_g1_fk.py -q
+```
+rc=0：**6 passed, 10 skipped**（跳过的是需要 CUDA 的四口径 goal 对拍等）。CUDA 下的全部测试：T36 33 passed / 0 skipped；
+包含本 change 代码的后续分支 `d833b81` 上 49 passed（2026-10-25，机器 A）。
+
+## 复现目标达成情况（归档时）
+| 目标（design） | 结果 | 状态 |
+|---|---|---|
+| 名字过滤 129,667 | 129,667 | ✓ |
+| 可行性过滤 129,514 | 129,511（差 3；论文未给可行性阈值） | ✗（注明后对照） |
+| LAFAN1 单卡回报 0.82 | 本 change 代码 2 h / 约 9.6k 次迭代：0.763（beyondmimic_seq）/ 0.766（anchor_ori_now）；后续修复代码在第 18k 次迭代 0.821（anchor_ori_now，`2026-10-24-training-throughput` T28 对照 2） | 部分（需要约 1.8 万次迭代） |
+| BONES-SEED 3 h 回报 > 0.90 | 本 change 代码 3 h（13,230 次）0.894 / 1,234 失败；后续代码（修复 + 加速 + 采样器）44k 次 0.934 / 210 失败 | 回报 ✓（后续代码），失败数 ✗（论文 25） |
+| Table A.8 分组同形 | 4 组大小对上；空翻 / 侧滚等在后续采样器修复后才开始学会 | ✗ |
+| 8 步误差 0.007–0.011 | 0.008–0.010 | ✓ |
+| 想象吞吐 > 10× MuJoCo Warp | 未测（T37） | — |
+
+## Known gaps
+- T37 想象 vs 仿真吞吐基准、T57 Table A.8 分组精确对上：未完成。
+- BONES-SEED 失败数与论文（25）差一个数量级；LAFAN1 到 0.82 所需迭代比论文 1.2 h 的估计多。转入后续 change。
+- 所有对照为单种子。

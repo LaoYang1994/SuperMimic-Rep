@@ -72,7 +72,6 @@
 
 ### E. LAFAN1 对齐 Fig. 4a
 - [x] T36 — 同步代码后在 GPU 机跑全部测试，必须全绿（CUDA 测试不得被跳过）· `tests/`
-- [ ] T37 — 跑吞吐基准 `scripts/bench_sim_speed.py` 与 `scripts/bench_imagination.py`（2k/4k/8k/16k 环境），核对想象 > 10× MuJoCo Warp · `scripts/bench_imagination.py`（只读）
 执行顺序（用户 2026-10-24 决定，见 design Clarifications）：T38 → T41（仅 seq）→ T42 → F 组（T43–T54）→ T39 → T40 → T41（补全）。
 - [x] T38 — 训练 `beyondmimic_seq`：`sm-train --run-name lafan1_seq --data.npz-dir data/npz/lafan1 --env.obs-mode beyondmimic_seq --schedule.max-hours 2` · `logs/lafan1_seq/`
 - [x] T39 — 训练 `anchor_ori_now`（同上参数，`--run-name lafan1_now`）· `logs/lafan1_now/`
@@ -92,11 +91,16 @@
 - [x] T49 — 新增固定 2000 条子集生成脚本（seed 0，从 manifest 抽样）· `scripts/data/make_subset.py`
 - [x] T50 — 用 T64 从分片拼出全量紧凑库 `$BANK/bones_seed/library/bones_seed_compact.pt` 与 2000 条子集库 `bones_seed_subset2000.pt` · `scripts/data/merge_library_parts.py`
 - [x] T51 — 新增 Table A.8 分组脚本：按 clip 名关键词把 benchmark 结果归入 side rolls / flips / fire-in-the-hole / crossed legs / lying-resting-standing / broad jumps / dance routine / 其他，并输出各组失败数 · `scripts/eval_groups.py`
-- [ ] T57 — 在过滤后的 manifest 上校验 T51 的分组大小**精确等于** Table A.8：22 / 44 / 20 / 10 / 99 / 24 / 8 / 129,287（原始名里 `flip` 58 条、`side_roll` 24 条，需由过滤与分组规则共同收敛到 44 / 22；对不上即说明过滤或分组有误）· `scripts/eval_groups.py`
 - [x] T58 — `scripts/eval_benchmark.py` 新增 `--library`（紧凑库路径）：用紧凑库评测（非紧凑全量约 60 GB 显存且需 14 万个 npz，不可行；紧凑库约 7 GB）· `scripts/eval_benchmark.py`
 - [x] T52 — 训练 BONES-SEED（T42 选定口径，单卡）：`--data.library $BANK/bones_seed/library/bones_seed_compact.pt --schedule.checkpoint-at-hours 3.0 --schedule.max-hours 3.5`；**训练期间不在同卡上评测**（会拖慢训练、扭曲计时；论文也不计评测时间），checkpoint 在训练结束后用子集库评测 · `logs/bones_main/`
 - [x] T53 — 用 `ckpt_h3.0.pt` 在全量紧凑库上跑 129,514 条 benchmark，得到回报与失败数 · `validation.md`
 - [x] T54 — 用 T51 输出各组失败表，与 Table A.8 并列；记录 8 步误差 · `validation.md`
+
+### 归档时未完成（2026-10-26，用户确认按已完成部分归档）
+- T37 — 跑吞吐基准 `scripts/bench_sim_speed.py` 与 `scripts/bench_imagination.py`（2k/4k/8k/16k 环境），核对想象 > 10× MuJoCo Warp · `scripts/bench_imagination.py`（只读）
+- T57 — 在过滤后的 manifest 上校验 T51 的分组大小**精确等于** Table A.8：22 / 44 / 20 / 10 / 99 / 24 / 8 / 129,287（原始名里 `flip` 58 条、`side_roll` 24 条，需由过滤与分组规则共同收敛到 44 / 22；对不上即说明过滤或分组有误）· `scripts/eval_groups.py`
+  - T37：吞吐基准未跑（GPU 机一直在训练）；T57：flips 54 / lying 64 / dance routine 与 Table A.8 对不上，论文未给分组规则，无法从公开信息确定。
+- 未达到的复现目标（LAFAN1 0.82 的时间、BONES-SEED 失败数接近 25）转入后续 change。
 
 ## Files to change
 - `scripts/remote/sync_code.sh`（新）：本地→GPU 机代码同步
@@ -117,13 +121,13 @@
 - `scripts/data/filter_bones_seed.py`：SONIC 完整表 + 补充词 + `--extra-keywords` / `--name-only`
 - `scripts/data/make_subset.py`（新）、`scripts/eval_groups.py`（新）
 - `tests/test_schedule.py`（新）、`tests/test_analytic_heads.py`、`tests/test_env_smoke.py`
-- `docs/changes/active/2026-10-24-paper-faithful-reproduction/validation.md`（实验记录，validate 阶段）
+- `docs/changes/archive/2026-10-24-paper-faithful-reproduction/validation.md`（实验记录，validate 阶段）
 
 ## Tests
-- [ ] Unit tests — `tests/test_schedule.py`（采集累加器）；四种口径的 `goal_layout` 维度
-- [ ] Integration tests — 四种口径仿真 goal 与想象 goal 逐元素对拍；`test_env_smoke`；全部原有 CUDA 测试在 GPU 机通过、不被跳过
-- [ ] Benchmark or performance tests — 想象 vs MuJoCo Warp 吞吐（> 10×）；LAFAN1 三口径到 0.82 的时长；BONES-SEED 3 h 回报 / 失败数；8 步误差 0.007–0.011
-- [ ] Manual validation — 名字过滤 129,667 / 可行性过滤 129,514 / 264.56 h；`scripts/play.py` 目视检查选定口径在翻跟头、侧滚类 clip 上的表现
+- [x] Unit tests — `tests/test_schedule.py`（采集累加器）；四种口径的 `goal_layout` 维度（T36：33 passed；2026-10-26 CPU 重跑见 validation）
+- [x] Integration tests — 四种口径仿真 goal 与想象 goal 逐元素对拍；`test_env_smoke`；全部原有 CUDA 测试在 GPU 机通过、不被跳过（T36：33 passed, 0 skipped；后续分支 `d833b81` 上 49 passed）
+- [x] Benchmark or performance tests — LAFAN1 三口径 2 h 结果、BONES-SEED 3 h 回报 / 失败数、8 步误差 0.007–0.011 已测（见 validation）；想象 vs MuJoCo Warp 吞吐（T37）未做，见"归档时未完成"
+- [x] Manual validation — 名字过滤 129,667 ✓ / 可行性过滤 129,511（论文 129,514，差 3）/ 263.08 h；翻跟头、侧滚的目视检查改用 `scripts/render_video.py` 录像完成（见 `2026-10-25-sampler-attainable-return`）
 
 ## Contract updates
 `docs/CONTRACTS.md#benchmark-协议论文附录-f1`：写明回报 = 奖励和 /（`max_r` × 整条 clip 步数），失败 clip 只累计到终止；benchmark 改动的前后对比由 T55/T56/T62 完成。

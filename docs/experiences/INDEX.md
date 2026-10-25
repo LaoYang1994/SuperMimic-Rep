@@ -14,3 +14,4 @@ an agent can find the right lesson without opening every file.
 - [torch.where does not stop NaN gradients](python/torch-where-nan-gradient.md) — a "safe" branch still yields NaN gradients at singular inputs (quaternion error at zero)
 - [Optimizer.load_state_dict drops fused=True](python/optimizer-load-drops-fused.md) — after loading a checkpoint the fused optimizer silently reverts (no speed-up, per-parameter syncs)
 - [Profile in ms before optimizing a launch-bound loop](perf/launch-bound-training-profile.md) — sync counts mislead; compile + CUDA graphs cut launches; how to profile and verify
+- [Reverse-engineer a data filter from exact counts](data/reverse-engineer-filter-from-counts.md) — paper gives filtered sizes but not the keyword list / thresholds

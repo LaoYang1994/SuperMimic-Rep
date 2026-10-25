@@ -13,11 +13,14 @@ required.
   见 `CONCEPTS.md#观测口径`）、数据集与 clip 数、GPU 型号与卡数、训练时长、迭代语义
   （见 `CONCEPTS.md#迭代与-utd`）。缺任何一项的数字不得用于结论。
 - 不同观测口径、不同数据集、不同评测协议的结果不能直接对比，也不能放在同一列里不加标注。
+  观测口径取值：`beyondmimic_seq`（论文口径）/ `anchor_ori_now`（+6 维朝向）/ `proprio_only`（Table A.1 字面）/
+  `anchor_pose9`（+9 维位姿，仅作参照）。迭代语义固定为"1 次迭代 = 1 次更新"（`CONCEPTS.md#迭代与-utd`）。
+- BONES-SEED 结果与论文对照时注明过滤后条数：本仓库 129,511 条（论文 129,514，名字过滤 129,667 两边一致）。
 - 训练时长只计训练主循环，不计 checkpoint 评测时间（与论文 §4.1 一致）。
 - 子集评测（如 BONES-SEED 2000 条）必须注明是子集，不能当作全量 benchmark 的结果。
 
 ### Examples
-- "LAFAN1 40 clip，+6 维朝向，1×RTX PRO 6000，1.4 h，评测回报 0.83，0/40 失败，迭代 = 仿真步"
+- "LAFAN1 40 clip，+6 维朝向（`anchor_ori_now`），1×RTX PRO 6000，第 18,000 次迭代（3.7 h），评测回报 0.821，1/40 失败，迭代 = 更新"
 
 ### Invalid examples
 - "1.4 h 达到 0.83，已对上论文"（缺口径、卡型、迭代语义）
@@ -27,7 +30,8 @@ required.
 ### Rules
 - 每条 clip 只从首帧整条播放一次；足底摩擦 1.0；不加域随机化、观测噪声和动作噪声；物理确定性；
   策略确定性执行。
-- 失败 = 触发训练终止条件（`CONCEPTS.md#失败failed-motion`）；回报 = 归一化回报。
+- 失败 = 触发训练终止条件（`CONCEPTS.md#失败failed-motion`）；回报 = 归一化回报：奖励和 /（`max_r` × 整条 clip 的步数），
+  失败的 clip 只累计到终止为止（所以提前失败得分低）。
 - 改动 benchmark 代码（`src/supermimic/eval/`、`scripts/eval_benchmark.py`）必须开 change 并做 validate，
   且要用改动前后的同一 checkpoint 对比结果。
 
