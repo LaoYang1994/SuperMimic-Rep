@@ -19,9 +19,11 @@
    紧凑库（`scripts/data/build_library.py`，常驻显存、在线 FK）。
 2. **训练**：`sm-train`（`src/supermimic/scripts/train.py`）跑 Algorithm A.1 主循环；多卡用
    `torchrun`（每 rank 自带仿真与 replay buffer，梯度 all-reduce，lr × √world）。
-3. **评测**：`scripts/eval_benchmark.py` 按附录 F.1 协议整条 clip 确定性播放，输出归一化回报与
+3. **性能**：`scripts/perf/profile_train.py` 稳态 profile（按阶段的发射 / 同步计数、`--sync-stacks` 同步来源）；
+   `scripts/perf/update_parity.py` 冻结一次迭代的输入，对比两个代码版本的单次更新（先测同进程噪声基准）。
+4. **评测**：`scripts/eval_benchmark.py` 按附录 F.1 协议整条 clip 确定性播放，输出归一化回报与
    失败数；`scripts/eval_push.py` 推力恢复（§4.3）；`scripts/diag_drift.py` 全局漂移诊断。
-4. **查看**：`scripts/play.py` 交互回放（参考 ghost），`scripts/tb_tail.py` 无 UI 读 TensorBoard，
+5. **查看**：`scripts/play.py` 交互回放（参考 ghost），`scripts/tb_tail.py` 无 UI 读 TensorBoard，
    `scripts/render_video.py` 无显示器录 MP4（参考 ghost + 每步终止误差，`MUJOCO_GL=egl`），
    `scripts/sampler_report.py`（仅 CPU）按动作组查看 checkpoint 的回报采样份额。
 
@@ -97,7 +99,10 @@ goal 是未来 K=10 帧参考（每帧 68 维）；`EnvCfg.anchor_obs=True` 时 
 
 ### 想象与策略更新（`imagination/`）
 从 replay buffer 采起点，冻结世界模型想象 H=32 步，用软存活权重和 critic bootstrap 构造
-Eq. 2 目标，再 BPTT。Critic 在 GAE(λ=0.95) 目标上训练，5 epoch × 4 minibatch。支持 `torch.compile`。
+Eq. 2 目标，再 BPTT。Critic 在 GAE(λ=0.95) 目标上训练，5 epoch × 4 minibatch。整个想象步（策略 + 世界模型 + 奖励 /
+终止 + goal + 带噪观测历史）一次编译并以 CUDA Graphs 回放（`PolicyTrainerCfg.compile = "reduce-overhead"`）；
+WM 的 8 步窗口损失同样（`WMTrainerCfg.compile`）；三个优化器为 fused Adam。单卡 RTX PRO 6000 稳态
+LAFAN1 371 ms/迭代（2.70 次/s）、BONES-SEED 2.4 次/s（change 2026-10-24-training-throughput；原 1.33 / 1.2 次/s）。
 
 ### 训练循环（`training/loop.py`）
 一次"迭代"等于一个向量化仿真步；更新按 UTD=0.4 的比例累加触发（上游计划 D12 的解读 A）。

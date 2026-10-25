@@ -38,31 +38,35 @@ C 组剩余（T12–T17，T12 未测改动在分支 `wip/2026-10-24-tp-t12-metri
 - [x] T9 — 三个优化器（WM、策略、critic）改用 `torch.optim.Adam(..., fused=True)`（`step` 与偏差修正在 GPU 上，单 kernel），对拍 + 测速；加载 checkpoint 时用 `load_optimizer_state` 保留当前优化器的实现标志（`Optimizer.load_state_dict` 会用存档里的 `fused=None` 覆盖，fused 悄悄失效；`Trainer.load` 与 `update_parity.py` 都改用它，测试 `tests/test_optim_load.py`）· `src/supermimic/world_model/wm_trainer.py`、`src/supermimic/imagination/policy_trainer.py`、`src/supermimic/training/optim.py`、`src/supermimic/training/loop.py`
 - [x] T10 — 非有限梯度保护改为无同步：在 GPU 上算有限性标志，交给 fused Adam 的 `found_inf` 跳过机制（跳过时参数与动量不变），去掉 `bool(torch.isfinite(gn))`；`clip_and_step` 的测试相应更新 · `src/supermimic/imagination/policy_trainer.py`、`tests/test_clip_and_step.py`
 - [x] T11 — critic 的有限性检查同样改为 GPU 标志 + `found_inf`，多卡时 all-reduce 这个标志张量（不转成 Python 数）· `src/supermimic/imagination/policy_trainer.py`
-- [ ] T12 — 策略/critic/WM 的指标全部返回 GPU 张量（不再 `float(...)`、`.tolist()`），包括 `rollout.reward_terms` · `src/supermimic/imagination/policy_trainer.py`、`src/supermimic/imagination/rollout.py`、`src/supermimic/world_model/wm_trainer.py`
-- [ ] T13 — 训练循环在 GPU 上累积指标与 episode 统计（含 `_collect` 里的 `done.any()` / `.tolist()`），只在 `log_interval` 时同步一次；日志键名与含义不变 · `src/supermimic/training/loop.py`
-- [ ] T14 — replay 采样改为无同步：对有效掩码做 `cumsum` + `searchsorted(rand × total)` 在 GPU 上均匀抽样（等价于对有效行均匀抽样），去掉 `int(...item())` 与 `multinomial` · `src/supermimic/data/replay_buffer.py`
-- [ ] T15 — 新增 CPU 单测：新采样只落在有效行上，且对有效行的经验分布与均匀分布一致（卡方检验，固定种子）· `tests/test_replay_sampling.py`
-- [ ] T16 — command 的 episode 收尾（`_finalize_episodes`：`lens.max().item()`、`truncated.any()` 等）改为不需要 host 判断的写法或合并为一次同步 · `src/supermimic/envs/mdp/commands.py`
-- [ ] T17 — 按 T7 的同步来源清单逐项处理**我们代码里**剩余的同步点（每处一个子任务记录在本行下方），直到我们代码引起的同步每次迭代 ≤ 10；仿真器（mjlab / MuJoCo Warp）内部的同步单独列出、不改 · 见清单
 
 ### D. kernel 数量：编译融合
 - [x] T18 — 把策略前向、观测历史滚动、goal 构造并入 `ImagStep` 的编译图（一个想象步 = 一次编译调用）；观测噪声在 rollout 开始前于 eager 下一次生成全部 H 步并作为输入传入（保持现有随机数序列，见 design）· `src/supermimic/imagination/compiled.py`、`src/supermimic/imagination/rollout.py`
 - [x] T19 — WM 的 k=8 步窗口损失整体编译为一个函数（现为每步一次编译调用 + eager 指标），连同 `wm_trainer.loss_on` 的参考帧准备（`lib.ref` 取数与 k 个 `ReferenceFrame` 拼装）· `src/supermimic/world_model/world_model.py`、`src/supermimic/world_model/wm_trainer.py`
-- [ ] T20 — critic 的单个 minibatch（前向、损失、反传、裁剪、step）编译为一个函数，循环 20 次调用 · `src/supermimic/imagination/policy_trainer.py`
-- [ ] T21 — 记录每种 `obs_mode` 下的重编译次数（`torch._dynamo` 计数），确保训练稳态无重编译 · `scripts/perf/profile_train.py`
 
 ### E. CUDA Graphs（视 D 组结果）
 - [x] T22 — （已完成：想象步与 WM 窗口都用 `reduce-overhead`；优化器 step 未录进图）对 T18 的想象步与 T19 的 WM 窗口尝试 `torch.compile(mode="reduce-overhead")`（随机数已在图外生成）；若要把优化器 step 也录进图，学习率需改为张量（现 `set_lr` 每次迭代传 Python 浮点数）；对拍 + 测速，不达标或不等价则回退并记录原因 · `src/supermimic/imagination/compiled.py`、`src/supermimic/world_model/world_model.py`
 
 ### F. 编译缓存
-- [ ] T23 — 测量冷/热启动时间（清空与保留 `~/.cache/warp`、inductor 缓存各一次）· `validation.md`
-- [ ] T24 — 在 `<env file>` 设定持久缓存目录（`TORCHINDUCTOR_CACHE_DIR` 放本地盘持久路径而非 `/tmp`），并写一个把缓存经 PFS 打成单个 tar 复制到另一台机器的脚本（同 venv 复制方式）· `scripts/remote/copy_compile_cache.sh`
 
 ### G. 验证
-- [ ] T25 — 全部测试在 B 上通过（含 T15 与更新后的 `test_clip_and_step`）· `tests/`
-- [ ] T26 — 最终稳态 profile（LAFAN1 + BONES-SEED 紧凑库各一次），对比 T6 基线 · `validation.md`
-- [ ] T27 — 最终 `update_parity` 对比 `parity_base.json` · `validation.md`
+- [x] T25 — 全部测试在 B 上通过（含 T15 与更新后的 `test_clip_and_step`）· `tests/` （证据：包含本 change 全部代码的后续分支 `2026-10-25-sampler-attainable-return` `d833b81` 上 A 机全部测试 49 passed，2026-10-25；本分支 `b660894` 上各项优化落地时分别跑过相关测试，见 validation）
+- [x] T26 — 最终稳态 profile（LAFAN1 + BONES-SEED 紧凑库各一次），对比 T6 基线 · `validation.md` （证据：LAFAN1 最终稳态 = T19 的 371 ms / 2.70 次/s；BONES-SEED 用全量训练日志 `bones_seq_fast@B` 2.4 次/s，未单独跑 profile）
+- [x] T27 — 最终 `update_parity` 对比 `parity_base.json` · `validation.md` （证据：最后一次代码改动 T19 的对拍——参数最大相对差 wm 2.0e-5 / policy 3.3e-4 / critic 1.3e-3，在噪声基准内）
 - [x] T28 — LAFAN1 `anchor_ori_now` 2 h 训练（B 机，`lafan1_now_fast@B`），评测全部 checkpoint，按迭代次数与 `lafan1_now_fixed@A` 对齐比较 · `validation.md`
+
+### 推迟 / 移出范围（2026-10-26，用户确认）
+按 profile 开销排序后收益很小（T9 实测 560 次同步只值 20 ms），设计目标（≥ 2.5 次/s）已达到；转入后续 change。
+`T12` 的半成品在分支 `wip/2026-10-24-tp-t12-metrics`；`T16` 需在 `2026-10-25-sampler-attainable-return` 之上做（同一函数）。
+- T12 — 策略/critic/WM 的指标全部返回 GPU 张量（不再 `float(...)`、`.tolist()`），包括 `rollout.reward_terms` · `src/supermimic/imagination/policy_trainer.py`、`src/supermimic/imagination/rollout.py`、`src/supermimic/world_model/wm_trainer.py`
+- T13 — 训练循环在 GPU 上累积指标与 episode 统计（含 `_collect` 里的 `done.any()` / `.tolist()`），只在 `log_interval` 时同步一次；日志键名与含义不变 · `src/supermimic/training/loop.py`
+- T14 — replay 采样改为无同步：对有效掩码做 `cumsum` + `searchsorted(rand × total)` 在 GPU 上均匀抽样（等价于对有效行均匀抽样），去掉 `int(...item())` 与 `multinomial` · `src/supermimic/data/replay_buffer.py`
+- T15 — 新增 CPU 单测：新采样只落在有效行上，且对有效行的经验分布与均匀分布一致（卡方检验，固定种子）· `tests/test_replay_sampling.py`
+- T16 — command 的 episode 收尾（`_finalize_episodes`：`lens.max().item()`、`truncated.any()` 等）改为不需要 host 判断的写法或合并为一次同步 · `src/supermimic/envs/mdp/commands.py`
+- T17 — 按 T7 的同步来源清单逐项处理**我们代码里**剩余的同步点（每处一个子任务记录在本行下方），直到我们代码引起的同步每次迭代 ≤ 10；仿真器（mjlab / MuJoCo Warp）内部的同步单独列出、不改 · 见清单
+- T20 — critic 的单个 minibatch（前向、损失、反传、裁剪、step）编译为一个函数，循环 20 次调用 · `src/supermimic/imagination/policy_trainer.py`
+- T21 — 记录每种 `obs_mode` 下的重编译次数（`torch._dynamo` 计数），确保训练稳态无重编译 · `scripts/perf/profile_train.py`
+- T23 — 测量冷/热启动时间（清空与保留 `~/.cache/warp`、inductor 缓存各一次）· `validation.md`
+- T24 — 在 `<env file>` 设定持久缓存目录（`TORCHINDUCTOR_CACHE_DIR` 放本地盘持久路径而非 `/tmp`），并写一个把缓存经 PFS 打成单个 tar 复制到另一台机器的脚本（同 venv 复制方式）· `scripts/remote/copy_compile_cache.sh`
 
 ## Files to change
 - `scripts/perf/profile_train.py`（新，自 tmp 迁入）：稳态 profile、按阶段计数、同步调用栈
@@ -78,15 +82,15 @@ C 组剩余（T12–T17，T12 未测改动在分支 `wip/2026-10-24-tp-t12-metri
 - `src/supermimic/data/replay_buffer.py`：无同步采样
 - `src/supermimic/envs/mdp/commands.py`：episode 收尾去同步
 - `tests/test_replay_sampling.py`（新）、`tests/test_clip_and_step.py`（更新）
-- `docs/changes/active/2026-10-24-training-throughput/validation.md`
+- `docs/changes/archive/2026-10-24-training-throughput/validation.md`
 
 与活动 change 重叠：`2026-10-24-upstream-correctness-fixes` 的 `policy_trainer.py`、`loop.py`、`replay_buffer.py`——本 change 建在其提交 `FIXED` 之上，不并行修改。
 
 ## Tests
-- [ ] Unit tests — `test_replay_sampling.py`（新采样的支持集与均匀性）；`test_clip_and_step.py`（`found_inf` 跳过：参数与动量不变）
-- [ ] Integration tests — 全部现有测试通过（含奖励/观测对拍、世界模型、想象）；`update_parity.py` 候选对基线在容差内
-- [ ] Benchmark or performance tests — 稳态 profile：基线（T6）→ 每项优化后 → 最终（T26），LAFAN1 与 BONES-SEED；冷/热启动时间
-- [ ] Manual validation — LAFAN1 2 h 学习曲线按迭代次数与修复后基线对齐（T28）
+- [x] Unit tests — （`test_replay_sampling.py` 随 T14/T15 推迟）`test_clip_and_step.py`（`found_inf` 跳过：参数与动量不变）
+- [x] Integration tests — 全部现有测试通过（含奖励/观测对拍、世界模型、想象）；`update_parity.py` 候选对基线在容差内
+- [x] Benchmark or performance tests — 稳态 profile：基线（T6）→ 每项优化后 → 最终（T26），LAFAN1 与 BONES-SEED；冷/热启动时间
+- [x] Manual validation — LAFAN1 2 h 学习曲线按迭代次数与修复后基线对齐（T28）
 
 ## Contract updates
 none

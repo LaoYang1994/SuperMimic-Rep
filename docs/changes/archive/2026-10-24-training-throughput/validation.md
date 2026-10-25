@@ -171,3 +171,18 @@ LAFAN1 40 clip，`anchor_ori_now`（+6 维朝向口径），1×RTX PRO 6000，�
 → 未见系统性差异（每边单种子）。T28 通过。
 附带结论（复现进度，不属本 change）：未加速代码在第 18,000 次迭代达到 0.821 / 1 失败（论文 1.2 h：0.82）——2 h 停在 0.77 是更新次数不够；
 快版 2 h 只到 17,350 次，按 2.7 次/s 到 18,000 次需 ≈ 1.85 h。
+
+## change-validate（2026-10-26）
+重新运行（代码 `b660894`，远程 tree 已同步、`src` 无变化，`supermimic.__file__` 指向本 tree，CPU，`CUDA_VISIBLE_DEVICES=""`，机器 B）：
+```bash
+PYTHONPATH=<tree>/src CUDA_VISIBLE_DEVICES="" $PY -m pytest tests/test_optim_load.py tests/test_clip_and_step.py tests/test_replay_labels.py tests/test_quat_error.py tests/test_schedule.py -q
+```
+rc=0：**10 passed, 1 warning**（6.1 s）。GPU 全部测试：后续分支 `d833b81`（含本 change 全部代码）上 49 passed（2026-10-25，机器 A）。
+速度与等价证据见上文（B 组基线、C/D/E 组每项对拍与 profile、G 组 T28），以及 BONES-SEED 36k/40k/44k fix 版 vs 加速版同迭代全量评测
+（`2026-10-24-paper-faithful-reproduction` / 本 change 的全量运行：回报差 ±0.007、失败差 ±50，正负交替）。
+
+## Known gaps
+- 同步未降到个位数、编译缓存持久化 / 共享、重编译计数：推迟（plan"推迟 / 移出范围"）。
+- `b660894` 本身未单独跑一次 GPU 全部测试（只在后续分支上跑过）。
+- 多卡路径未实测。
+- 训练级等价每边单种子。
