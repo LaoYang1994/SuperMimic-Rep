@@ -5,7 +5,7 @@
 达到设计目标 ≥ 2.5 次/s（LAFAN1）。手段：fused Adam（并修复 checkpoint 加载时 fused 失效）、无同步的非有限保护、整个想象步一次编译 +
 CUDA Graphs、WM 8 步窗口一次编译 + CUDA Graphs。每项都做了单次更新对拍（均在同进程噪声基准内），训练级等价按迭代对齐验证
 （LAFAN1 T28 8 个点差值均值 +0.002；BONES-SEED 36k/40k/44k fix 版对加速版回报差 ±0.007、失败差 ±50，正负交替）。
-大文件检查（`git diff --name-only 0f4c446~1..c83f72f`，> 1 MB）：无输出。
+大文件检查（`git diff --name-only 6c8f37d~1..6919975`，> 1 MB）：无输出。
 
 **Verdict: archive-with-fixes** —— 无 P1/P2；design 中"同步降到个位数""编译缓存共享""重编译计数"三点未实现，已按用户确认移出范围（plan 的"推迟 / 移出范围"），记为 Accepted risks / Follow-up。
 
@@ -29,7 +29,7 @@ CUDA Graphs、WM 8 步窗口一次编译 + CUDA Graphs。每项都做了单次�
 [P3] (confidence 6/10) scripts/perf/profile_train.py:71,80 — 子阶段标注靠替换 `torch.Tensor.backward` 与 `policy_trainer.imagine`（只在该脚本进程内）；若在同一进程里再跑别的东西会被影响 → 脚本说明里注明"独立进程运行"。
 
 ## Unverified
-- （置信 4/10）`c83f72f` 本身未单独跑过一次"全部测试"；全部测试是在其后续分支（含采样器改动）上跑的 49 passed。采样器改动不触及本 change 的文件，判断风险很低。
+- （置信 4/10）`6919975` 本身未单独跑过一次"全部测试"；全部测试是在其后续分支（含采样器改动）上跑的 49 passed。采样器改动不触及本 change 的文件，判断风险很低。
 
 ## Resolved
 - 第一次 fused Adam 没生效：`Optimizer.load_state_dict` 用存档的 `fused=None` 覆盖当前参数组 → `training/optim.py:load_optimizer_state`（`tests/test_optim_load.py`）。

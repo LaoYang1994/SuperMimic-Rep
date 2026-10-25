@@ -2,7 +2,7 @@
 
 ## Summary
 Self-review of the worktree diff (`change/2026-10-24-upstream-correctness-fixes`, uncommitted, against
-`2929b30`) for tasks T1–T13 against `design.md`, `plan.md` and `docs/CONTRACTS.md`. The three fixes and the
+`5d2b9d9`) for tasks T1–T13 against `design.md`, `plan.md` and `docs/CONTRACTS.md`. The three fixes and the
 guard match the design; one multi-GPU deadlock in the critic guard must be fixed; validation (T14–T19) has not
 run yet (needs the GPU, deferred by the user until the current BONES-SEED run ends).
 Verdict: **archive-with-fixes** → P2 fixed (T20); remaining gate is `/change-validate` (T14–T19).

@@ -3,7 +3,7 @@
 约定（给零上下文的执行者）：
 - 远程机器见仓库根目录 `.compute_units`（A、B 两台同配置 PRO 6000，共享 PFS），远程操作按 `remote-exp` skill 与
   `docs/PROJECT.md` 的 remote profile。**测速与开发在机器 B 上做**，A 上的正式实验不打断。
-- 基线 = change `2026-10-24-upstream-correctness-fixes` 的提交 `2fada5d`（下称 `FIXED`；修复本身是 `c0df9d5`，`2fada5d` 另含远程同步脚本）；本 change 的第一个提交（T2–T5：工具 + 不改计算的 `update_on` 重构）记为 **`BASE`**，速度基线与对拍基线都在 `BASE` 上测。本 change 的分支
+- 基线 = change `2026-10-24-upstream-correctness-fixes` 的提交 `111c290`（下称 `FIXED`；修复本身是 `b779120`，`111c290` 另含远程同步脚本）；本 change 的第一个提交（T2–T5：工具 + 不改计算的 `update_on` 重构）记为 **`BASE`**，速度基线与对拍基线都在 `BASE` 上测。本 change 的分支
   `change/2026-10-24-training-throughput` 从 `FIXED` 拉出，worktree `.worktrees/2026-10-24-training-throughput`；远程 tree 同名，
   运行时 `export PYTHONPATH=$PWD/src` 并记录 `supermimic.__file__`。
 - **速度的唯一依据**：`scripts/perf/profile_train.py` 的稳态测量——机器 B、从同一 checkpoint 权重起步、沉淀 60 次迭代后测 20 次，
@@ -16,7 +16,7 @@
 ## Implementation steps
 
 ### A. 分支与工具
-- [x] T1 — 从 `FIXED`（`2fada5d`）新建分支与 worktree `.worktrees/2026-10-24-training-throughput` · git
+- [x] T1 — 从 `FIXED`（`111c290`）新建分支与 worktree `.worktrees/2026-10-24-training-throughput` · git
 - [x] T2 — 把 `tmp/scripts/profile_train.py` 移入仓库为 `scripts/perf/profile_train.py`，加 `--init-ckpt`、`--trace`（默认关）、按阶段的发射与同步计数（已在 tmp 版实现），并修正 GPU 忙碌时间只统计真实 kernel · `scripts/perf/profile_train.py`
 - [x] T3 — 给 profile 工具加 `--sync-stacks`：在 `torch.cuda.set_sync_debug_mode("warn")` 下跑 `--stack-iters` 次迭代，把每个触发同步的 torch 算子归到最内层的 supermimic / mjlab 调用帧，按（阶段, 调用位置）聚合（原计划的 `with_stack=True` 方案：20 次迭代 OOM 到 133 GB，且 runtime 事件无法归因，已放弃） · `scripts/perf/profile_train.py`
 - [x] T4 — 新增等价对拍脚本 `update_parity.py`：`--save <dir>` 从已训练 checkpoint 起步、填满 replay 后保存 10 个 WM 窗口批、1 个策略起点批、模型与三个优化器状态、RNG 状态；`--run <dir> --out <json>` 用这些输入跑一次 WM 更新与一次策略+critic 更新并记录 loss、梯度范数、参数摘要；`--compare a.json b.json` 输出最大相对误差 · `scripts/perf/update_parity.py`
@@ -49,7 +49,7 @@ C 组剩余（T12–T17，T12 未测改动在分支 `wip/2026-10-24-tp-t12-metri
 ### F. 编译缓存
 
 ### G. 验证
-- [x] T25 — 全部测试在 B 上通过（含 T15 与更新后的 `test_clip_and_step`）· `tests/` （证据：包含本 change 全部代码的后续分支 `2026-10-25-sampler-attainable-return` `dd91147` 上 A 机全部测试 49 passed，2026-10-25；本分支 `c83f72f` 上各项优化落地时分别跑过相关测试，见 validation）
+- [x] T25 — 全部测试在 B 上通过（含 T15 与更新后的 `test_clip_and_step`）· `tests/` （证据：包含本 change 全部代码的后续分支 `2026-10-25-sampler-attainable-return` `06b9f86` 上 A 机全部测试 49 passed，2026-10-25；本分支 `6919975` 上各项优化落地时分别跑过相关测试，见 validation）
 - [x] T26 — 最终稳态 profile（LAFAN1 + BONES-SEED 紧凑库各一次），对比 T6 基线 · `validation.md` （证据：LAFAN1 最终稳态 = T19 的 371 ms / 2.70 次/s；BONES-SEED 用全量训练日志 `bones_seq_fast@B` 2.4 次/s，未单独跑 profile）
 - [x] T27 — 最终 `update_parity` 对比 `parity_base.json` · `validation.md` （证据：最后一次代码改动 T19 的对拍——参数最大相对差 wm 2.0e-5 / policy 3.3e-4 / critic 1.3e-3，在噪声基准内）
 - [x] T28 — LAFAN1 `anchor_ori_now` 2 h 训练（B 机，`lafan1_now_fast@B`），评测全部 checkpoint，按迭代次数与 `lafan1_now_fixed@A` 对齐比较 · `validation.md`

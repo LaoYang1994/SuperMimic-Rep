@@ -1,7 +1,7 @@
 # Plan
 
 代码在 worktree `.worktrees/2026-10-25-sampler-attainable-return`（分支 `change/2026-10-25-sampler-attainable-return`，从
-`change/2026-10-24-training-throughput` 的 `c83f72f` 拉出）；本文件和 design 在主 checkout。远程运行按 `remote-exp` skill 与
+`change/2026-10-24-training-throughput` 的 `6919975` 拉出）；本文件和 design 在主 checkout。远程运行按 `remote-exp` skill 与
 `docs/PROJECT.md` 的 remote profile：远程 tree `<根>/.worktrees/2026-10-25-sampler-attainable-return`，`PYTHONPATH=<tree>/src`，
 启动时打印 `supermimic.__file__` 核对。结果按迭代对齐（`docs/CONTRACTS.md#结果报告与论文对照`）。
 
@@ -54,7 +54,7 @@ m_t = N* − t；A_t = g_max·(1 − γ^{m_t})；Ĝ_t = clip(R_t / A_t, 0, 1)。
 - `tests/test_sampler_normalization.py`（新）：归一化与 checkpoint 换算
 - `scripts/render_video.py`（已在主 checkout 写好，随本 change 一并提交到分支）：诊断视频
 
-与活动 change 重叠：`2026-10-24-training-throughput` 的 `commands.py`（T16 `_finalize_episodes` 去同步，已推迟）与 `loop.py`（T13 日志累积，已推迟）——本 change 从其分支 `c83f72f` 拉出，那两项之后在本 change 之上做。`2026-10-24-upstream-correctness-fixes`、`2026-10-24-paper-faithful-reproduction` 改过 `loop.py` 但已提交在 `c83f72f` 的祖先里，无并行修改。
+与活动 change 重叠：`2026-10-24-training-throughput` 的 `commands.py`（T16 `_finalize_episodes` 去同步，已推迟）与 `loop.py`（T13 日志累积，已推迟）——本 change 从其分支 `6919975` 拉出，那两项之后在本 change 之上做。`2026-10-24-upstream-correctness-fixes`、`2026-10-24-paper-faithful-reproduction` 改过 `loop.py` 但已提交在 `6919975` 的祖先里，无并行修改。
 
 ## Tests
 - [x] Unit tests — `tests/test_sampler_normalization.py`（T13、T14，CPU）
@@ -78,4 +78,4 @@ none
 - 新旧 checkpoint 的 `bin_return` 含义不同；旧 checkpoint 续训只能近似换算。
 
 ## Rollback plan
-本 change 的代码在独立分支；回退即继续使用 `c83f72f`（旧采样器）。A 上若新采样器明显更差（同迭代失败数或回报显著变差），停止 `bones_seq_sampler@A`，A 改回跑 fix 版或其他实验；B 的 `bones_seq_fast@B` 一直作为旧采样器基线保留。
+本 change 的代码在独立分支；回退即继续使用 `6919975`（旧采样器）。A 上若新采样器明显更差（同迭代失败数或回报显著变差），停止 `bones_seq_sampler@A`，A 改回跑 fix 版或其他实验；B 的 `bones_seq_fast@B` 一直作为旧采样器基线保留。

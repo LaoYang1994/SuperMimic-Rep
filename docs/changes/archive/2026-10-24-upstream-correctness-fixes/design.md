@@ -1,7 +1,7 @@
 # Design
 
 ## Background
-`Baojch/SuperMimic_Dyn`（同样基于 CuboiLeo `d9be385` 的 fork）在其 "Correctness" 改动中修了上游的若干问题。逐一对照本仓库代码（`2929b30`）核实，以下问题在本仓库同样存在：
+`Baojch/SuperMimic_Dyn`（同样基于 CuboiLeo `d9be385` 的 fork）在其 "Correctness" 改动中修了上游的若干问题。逐一对照本仓库代码（`5d2b9d9`）核实，以下问题在本仓库同样存在：
 
 1. **WM 终止标签错位一步**。`data/recorder.py` 写转移行时，`done` 是该行转移结果 s_{t+1} 的终止标签（`_write_rows(ids, done_next)`），终端行也写 `done=terminated`；但 `data/replay_buffer.py:135` 取窗口标签用 `done[ee[1:], tt[1:]]`（下一行的 `done`）。于是窗口中状态 s_{j+1} 拿到的是 s_{j+2} 的标签：终止前一步的 s_T 被标成终止，s_T 与 s_{T+1} 都成正样本。终止头因此学成"提前一步终止"，想象中的软存活权重 ĉ 偏悲观，进而影响 Eq. 2 目标与 critic 的 GAE 目标。
 2. **四元数零误差处 NaN 梯度**。`envs/mdp/rewards.py:_sq_quat_err` 用 mjlab 的 `quat_box_minus`，其小角度分支用 `torch.where(angle > eps, sin(half)/angle, taylor)`：前向不受影响，但被丢弃分支在 angle=0 时为 `sin/0`，反向经 `where` 传回 NaN。该函数是根部朝向与刚体朝向奖励（仿真侧与想象侧共用）的核心，BPTT 梯度经过它。精确零误差少见，但一旦出现，NaN 会写进策略权重（`PolicyTrainer.update` 只做裁剪，无非有限保护）。
@@ -54,7 +54,7 @@
 - 续训 warmup 问题与非有限梯度保护一并纳入（都是正确性保护，改动小）。
 - 终止头标签修复后，终止头的正样本数大约减半（每个终止 episode 从 2 个变 1 个），不调整 BCE 权重——论文 Eq. 1 是未加权 BCE。
 - 修复不影响已完成实验的结论记录；它们按"修复前"标注保留在 paper-faithful change 中。
-- 本 change 的代码在独立分支 `change/2026-10-24-upstream-correctness-fixes`（从 `2929b30`）上实现；是否用 worktree 在 `/change-implement` 时决定。
+- 本 change 的代码在独立分支 `change/2026-10-24-upstream-correctness-fixes`（从 `5d2b9d9`）上实现；是否用 worktree 在 `/change-implement` 时决定。
 
 ## Contract impact
 none（不改 CONTRACTS 中的规则；可补一条"WindowBatch.done 是第 j 个转移结果的终止标签"作为数据约定，若 review 认为需要）

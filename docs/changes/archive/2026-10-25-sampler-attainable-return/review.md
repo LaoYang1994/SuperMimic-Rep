@@ -4,7 +4,7 @@
 采样器归一化按 design 实现：`sampler_math.normalized_returns_to_go`（每步回报-to-go ÷ 可达回报，N* 按 episode 实际结构确定）、
 `bin_return` 改存完成度、困难采样去掉 `/ g_max`、末尾 bin 困难份额日志、checkpoint 兼容、诊断脚本与测试；远程验证 T15–T20 已完成
 （A 上 49 项测试通过；同迭代全量评测失败数 −22% / −40% / −42%，回报持平）。只有 P3。
-大文件检查（`git diff --name-only c83f72f..HEAD` + 未跟踪文件，> 1 MB）：无输出。
+大文件检查（`git diff --name-only 6919975..HEAD` + 未跟踪文件，> 1 MB）：无输出。
 
 **Verdict: ready-to-archive**（archive 时完成 plan 的 Project / Experience 更新）。
 

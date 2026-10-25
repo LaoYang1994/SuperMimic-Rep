@@ -125,7 +125,7 @@
 
 ## Tests
 - [x] Unit tests — `tests/test_schedule.py`（采集累加器）；四种口径的 `goal_layout` 维度（T36：33 passed；2026-10-26 CPU 重跑见 validation）
-- [x] Integration tests — 四种口径仿真 goal 与想象 goal 逐元素对拍；`test_env_smoke`；全部原有 CUDA 测试在 GPU 机通过、不被跳过（T36：33 passed, 0 skipped；后续分支 `dd91147` 上 49 passed）
+- [x] Integration tests — 四种口径仿真 goal 与想象 goal 逐元素对拍；`test_env_smoke`；全部原有 CUDA 测试在 GPU 机通过、不被跳过（T36：33 passed, 0 skipped；后续分支 `06b9f86` 上 49 passed）
 - [x] Benchmark or performance tests — LAFAN1 三口径 2 h 结果、BONES-SEED 3 h 回报 / 失败数、8 步误差 0.007–0.011 已测（见 validation）；想象 vs MuJoCo Warp 吞吐（T37）未做，见"归档时未完成"
 - [x] Manual validation — 名字过滤 129,667 ✓ / 可行性过滤 129,511（论文 129,514，差 3）/ 263.08 h；翻跟头、侧滚的目视检查改用 `scripts/render_video.py` 录像完成（见 `2026-10-25-sampler-attainable-return`）
 
