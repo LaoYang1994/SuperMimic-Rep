@@ -1,123 +1,230 @@
-# SuperMimic-Reproduced
+# SuperMimic-Rep
 
-> **English summary.** An independent from-scratch reproduction of *SuperMimic* (arXiv:2610.28480): a learned differentiable world model plus short-horizon BPTT actor-critic for Unitree G1 whole-body motion tracking, built on [mjlab](https://github.com/mujocolab/mjlab) / MuJoCo Warp. Includes the data pipeline (LAFAN1, BONES-SEED 129.9k clips), differentiable FK and analytic reward heads, the world model and imagination trainer, torchrun data-parallel training, the Appendix-F benchmark, and an interactive replay viewer. On LAFAN1 it reaches the paper's 0.82 tracking score in 1.66 h on one RTX 5090 (with anchor-relative observations; paper-observation runs are in progress). Documentation is in Chinese; see `docs/` for the paper spec, plan, review log and experiment log.
+A paper-faithful reproduction of **SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World
+Model** ([arXiv:2610.28480](https://arxiv.org/abs/2610.28480), CoRL 2026): a learned differentiable world model plus a
+short-horizon BPTT actor-critic for whole-body motion tracking on the Unitree G1, built on
+[mjlab](https://github.com/mujocolab/mjlab) / MuJoCo Warp.
 
-从零复现论文 **SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model**（[arXiv:2610.28480](https://arxiv.org/abs/2610.28480)，CoRL 2026）：一个学习得到的可微世界模型 + 短视野 BPTT actor-critic，用于 Unitree G1 人形全身动作跟踪。底座是 [mjlab](https://github.com/mujocolab/mjlab)（MuJoCo Warp），固定到 commit `8bb2bc9`；不使用 rsl_rl，世界模型、BPTT 训练器、多 clip 动作库、基于回报的重置采样、评测全部自己实现。
+The goal is to match the paper's numbers on a single GPU under the paper's training and evaluation protocol. **All
+results are compared at the same training progress (iterations = updates)**; wall-clock time is reported alongside but
+is never the basis of a comparison (see `docs/CONTRACTS.md`).
 
-> 状态（2026-10-21）：LAFAN1 上达到论文量级（M3），BONES-SEED 全量数据管线与单卡训练完成，多卡训练已跑通；正式结果正在按论文观测口径重跑（e6/e7）。详见 [docs/upstream/EXPERIMENTS.md](docs/upstream/EXPERIMENTS.md)。
+This repository is forked from [CuboiLeo/SuperMimic-Reproduced](https://github.com/CuboiLeo/SuperMimic-Reproduced)
+(MIT). The upstream documents are kept read-only in `docs/upstream/`; the results quoted there were obtained by the
+upstream author on RTX 5090s under the upstream protocol and are not results of this repository. Project
+documentation under `docs/` is written in Chinese.
 
-## 结果速览
+## Status (2026-10-26)
 
-评测协议为论文 Appendix F：每条 clip 从首帧整条确定性播放、无噪声无域随机化，**归一化回报** = Σ每步奖励 / (0.1 × 步数)，1.0 为完美跟踪；"失败" = 训练终止条件触发。
+Hardware: 1× RTX PRO 6000 Blackwell 96 GB. Iteration = one update (UTD 0.4, on average 2.5 simulator steps per
+update). Return = the paper's normalized return (§4): reward sum / (0.1 × number of steps of the whole clip), evaluated
+with the Appendix F.1 protocol (every clip played once from its first frame, deterministically). A motion fails when a
+training termination condition fires.
 
-| 实验 | 数据 | 硬件 | 观测口径 | 训练时长 | 评测回报 | 失败 |
-|---|---|---|---|---|---|---|
-| 论文 Fig. 4a | LAFAN1 40 clip | 1×H100 | 论文 | 1.2 h | 0.82 | – |
-| e2 | LAFAN1 40 clip | 1×5090 | **论文** | 1.8 h | 0.56 | 9/40 |
-| e3 | LAFAN1 40 clip | 1×5090 | +锚点相对位姿 | 1.66 h / 3.3 h | 0.824 / **0.904** | 5/40 / 3/40 |
-| 论文 Table A.8 | BONES-SEED 129.5k clip | 1×H100 | 论文 | 3 h | >0.90 | 25/129,514 |
-| e5 | BONES-SEED 129.9k clip | 1×5090 | +锚点相对位姿 | 4.2 h / 5.8 h | 0.934 / 0.935（2000 条子集） | 6/2000 / 5/2000 |
-| e6 / e7 | LAFAN1 40 clip | 3×5090 / 1×5090 | **论文** | 进行中 | – | – |
+### Against the paper
 
-- 世界模型 8 步开环归一化误差 0.0065–0.0099（论文 0.007–0.011）。
-- 仿真吞吐 4096 环境约 2×10⁵ env-steps/s（5090）；`torch.compile` 后一次想象 fwd+bwd（批 2048，H=32）0.33 s。
-- 四卡数据并行（显式梯度 all-reduce）效率 91%。
+| Target (paper) | This repository | Status |
+|---|---|---|
+| BONES-SEED name filter: 129,667 clips | 129,667 | ✓ |
+| BONES-SEED feasibility filter: 129,514 clips / 264.56 h | 129,511 / 263.08 h (thresholds not published; 3 clips off) | ≈ |
+| World-model 8-step prediction error 0.007–0.011 | 0.008–0.010 | ✓ |
+| LAFAN1 single-GPU return 0.82 (1.2 h on an H100) | 0.821 at 18,000 iterations (`anchor_ori_now`) | return ✓, takes longer |
+| BONES-SEED single-GPU 3 h return > 0.90 | 0.934 at 44,000 iterations | ✓ |
+| BONES-SEED single-GPU 3 h failures 25 / 129,514 (SONIC: 179) | 210 / 129,511 at 44,000 iterations | ✗ (an order of magnitude off) |
 
-**最重要的偏离项**：论文 Table A.1 的策略观测只有 93 维本体项（无状态估计）。按此口径的 e2 评测回报封顶 0.56，根部位置/朝向奖励几乎拿不到；加入 BeyondMimic 式锚点相对观测（goal 组追加 9 维）后 e3 达到 0.904。e3/e5 的数字因此**不与论文同口径**，正式结果以论文口径的 e6/e7 及后续 BONES-SEED 全量 run 为准。
+The paper reports times, not iteration counts. Calibrated on LAFAN1 (the paper's 1.2 h ≈ 16–19k of our iterations),
+the paper's 3 h corresponds to roughly **37–44k iterations** (an estimate), so BONES-SEED is compared with the paper's
+3 h results at 36k / 40k / 44k iterations.
 
-## 文档
+### LAFAN1 (40 clips, 2.45 h; `anchor_ori_now` = paper observations + 6-D anchor orientation)
 
-| 文件 | 内容 |
-|---|---|
-| [docs/upstream/PAPER_SPEC.md](docs/upstream/PAPER_SPEC.md) | 论文全部数值、公式、协议的逐条转录；"未指明"清单 U1–U20 |
-| [docs/upstream/REPRODUCTION_PLAN.md](docs/upstream/REPRODUCTION_PLAN.md) | 复现计划：目标、环境、设计决策 D1–D20、repo 骨架、分阶段步骤、测试、预算、风险 |
-| [docs/upstream/REVIEW_LOG.md](docs/upstream/REVIEW_LOG.md) | 计划的自审与两轮对抗审查记录 |
-| [docs/upstream/EXPERIMENTS.md](docs/upstream/EXPERIMENTS.md) | 实验日志：每个实验的配置、曲线、评测、偏离计划的决定、踩坑记录 |
-| 论文原文 | [arXiv:2610.28480](https://arxiv.org/abs/2610.28480)（不随仓库分发 PDF） |
+| Iteration | Return / failures (of 40) | Training time |
+|---|---|---|
+| 9,600 | 0.768 / 3 | 2.0 h (before the speed-up) |
+| 16,000 | 0.796 / 1 (before the speed-up); 0.815 / 2 (after) | 3.4 h / about 1.8 h |
+| 18,000 | **0.821 / 1** (before the speed-up) | 3.7 h; about 1.85 h after the speed-up |
 
-## 代码结构
+With the paper's observation setting (`beyondmimic_seq`), the pre-speed-up code reached 0.763 / 1 failure in 2 h
+(about 9.6k iterations), within noise of `anchor_ori_now` (0.766). Stopping at 0.77 after 2 h was a matter of too few
+updates.
 
-```
-src/supermimic/
-  config.py              TrainConfig（tyro CLI：data / env / world_model / policy / wm_trainer / policy_trainer / schedule）
-  data/                  CSV/BVH → 50 Hz npz 转换、replay buffer、仿真记录器
-  envs/                  mjlab ManagerBasedRlEnv 配置：多 clip 动作命令、回报采样重置、完整状态读写（state_io）、sim context（域随机化参数）
-    mdp/                 motion_library（含紧凑 fp16 库 + 在线 FK）、commands、observations、rewards、terminations
-  kinematics/            G1 可微位置 + 速度 FK（torch），与 MuJoCo 对拍到 1e-10（fp64）
-  world_model/           状态 71 维 MLP 动力学（速度增量 + 显式积分）、终止头、解析奖励/观测头、训练器
-  imagination/           想象 rollout、Eq. 2 目标 + GAE critic 目标、BPTT 策略训练器、torch.compile 封装
-  policy/                MotionEncoder(680→32) + 策略/critic MLP
-  training/              主循环（Algorithm A.1）、cosine 学习率、数据并行（torchrun，显式 all-reduce）
-  eval/                  Appendix F benchmark
-  scripts/train.py       训练入口（sm-train）
-scripts/
-  data/                  csv_to_npz_batch.py、filter_bones_seed.py、build_library.py
-  eval_benchmark.py      整 clip 评测；eval_push.py 推力测试；play.py 交互式 replay（含参考 ghost）
-  bench_sim_speed.py / bench_imagination.py   吞吐基准
-tests/                   FK / 解析头 / 环境 / 世界模型 / 想象 / 动作转换 / 紧凑库 的数值对拍与冒烟测试
-```
+### Full BONES-SEED (129,511 clips, 263 h; `beyondmimic_seq` = paper observation setting)
 
-## 环境
+| Iteration | Return / failures: original reset sampler | Return / failures: corrected sampler |
+|---|---|---|
+| 36,000 | 0.929 / 413 | 0.927 / **321** |
+| 40,000 | 0.929 / 425 | 0.929 / **253** |
+| 44,000 | 0.931 / 361 | 0.934 / **210** |
 
-- Python 3.12，`uv`；torch 2.14.1+cu130、mujoco 3.16、warp 1.18、mjlab `8bb2bc9`（见 `pyproject.toml` 的 `[tool.uv.sources]`）。
-- 已验证硬件：机器 A = 1×RTX 5090（驱动 580 开源内核模块）；机器 B = 4×RTX 5090（Threadripper PRO，PCIe，无 NVLink）。
-- 系统 `PYTHONPATH` 若带有 ROS 的 python3.10 包会让 pytest 崩溃，所有命令前加 `env -u PYTHONPATH`。
+Failures concentrate on flips, side rolls, fire-in-the-hole turns, lying down / standing up, kneeling and crawling, and
+jumps; walking, running and other everyday motions almost never fail. With the corrected sampler, flips went from 54/54
+failed to about 20/54. Per-group failures (paper Table A.8) come from `scripts/eval_groups.py`.
+
+### Training speed (single GPU, iteration = update)
+
+| Configuration | Upstream code | This repository |
+|---|---|---|
+| LAFAN1 (4096 environments, imagination batch 4096, H = 32) | 754 ms / iteration (1.33 it/s) | **371 ms / iteration (2.70 it/s)** |
+| Full BONES-SEED | 1.2 it/s | **2.4 it/s** |
+
+Every speed-up was checked numerically on single updates, and training-level results were verified at matched
+iterations (no systematic difference from the pre-speed-up code on LAFAN1 and BONES-SEED).
+
+### Not yet reached / next steps
+
+- BONES-SEED failures (210) are still far from the paper (25) and SONIC (179): fire-in-the-hole turns and broad jumps
+  are slightly worse with the new sampler, the sampler's estimates for rare motions update slowly, and the remaining
+  failures need a per-category analysis.
+- The paper does not give the grouping rules of Table A.8; the flips / lying / dance routine group sizes do not match.
+- The imagination vs. MuJoCo Warp throughput benchmark (paper Fig. 5a) has not been run.
+- All comparisons so far use a single seed.
+- Out of scope for now: the velocity interface and distillation (§4.5), PPO baselines, the H × critic ablation,
+  real-robot deployment.
+
+## Changes from upstream
+
+**Protocol alignment (paper appendices)**
+- An iteration is one update (one world-model and one policy / critic update); the learning-rate schedule and
+  checkpoint numbering follow it. Upstream counted one simulator step as one iteration.
+- Four observation settings via `--env.obs-mode`: `beyondmimic_seq` (the paper's), `anchor_ori_now`, `proprio_only`
+  (Table A.1 taken literally), `anchor_pose9`; simulator and imagined goals are checked element by element.
+- Domain randomization is sampled at startup; the return denominator is the whole clip's length, so early failures
+  score low.
+- BONES-SEED: streaming conversion, a name filter from SONIC's keyword table plus extra terms (exactly 129,667 clips),
+  the feasibility filter, and full benchmarks on a compact library.
+
+**Upstream bugs fixed**
+- The world model's termination labels were off by one step (the state before termination was labelled terminal).
+- The quaternion error had NaN gradients at zero error (`torch.where` does not block NaN from the discarded branch).
+- Resuming crashed on an empty replay buffer (warm-up collection now runs on every start).
+- Non-finite gradient guard: a step with NaN / Inf gradients is skipped, leaving weights and optimizer state unchanged.
+
+**Return-based reset sampler**: each 1 s bin's estimate is now the return-to-go divided by the largest return
+attainable from that step (a completion in [0, 1]). On 129k clips the original estimate gave 94% of the hard-sampling
+mass to clip-end bins only a few frames long, so flips, side rolls and similar motions were never practiced.
+
+**Training speed**: fused Adam (and a fix for checkpoint loading silently turning fused off), sync-free non-finite
+guards, the whole imagined step compiled into one graph and replayed with CUDA graphs, and the same for the world
+model's 8-step window.
+
+**Tools**: steady-state profiling (`scripts/perf/profile_train.py`), single-update parity checks
+(`scripts/perf/update_parity.py`), a reset-sampler report (`scripts/sampler_report.py`), and headless MP4 rendering
+with the reference shown as a translucent ghost and per-step termination errors (`scripts/render_video.py`).
+
+## Quick start
+
+### Environment
+
+- Python 3.12 and `uv`; torch 2.14 (cu130), mujoco / mujoco-warp 3.16, warp-lang ≥ 1.15; mjlab pinned to commit
+  `8bb2bc9` (`[tool.uv.sources]` in `pyproject.toml`).
+- A CUDA GPU is required for training, evaluation and most tests; only some unit tests run on CPU.
 
 ```bash
 uv sync --group dev
-env -u PYTHONPATH uv run pytest tests -q
+uv run pytest tests -q          # if your system PYTHONPATH carries another Python's packages, prefix env -u PYTHONPATH
 ```
 
-## 数据
+### Data
 
-- **LAFAN1**（40 条 G1 重定向 CSV，HF `lvhaidong/LAFAN1_Retargeting_Dataset`）→ `data/npz/lafan1/`，2.451 h（论文 2.45 h）。
-- **BONES-SEED**（HF `bones-studio/seed`，`g1.tar.gz`，142,220 条 120 fps CSV，厘米/角度）→ 50 Hz npz → 名字过滤 + 可行性过滤 → **129,943 条 / 263.75 h**（论文 129,514 / 264.56）→ 紧凑 fp16 库 `data/library/bones_seed_compact.pt`（6.7 GB，常驻显存，目标特征与刚体状态在线 FK）。
+- **LAFAN1**: 40 G1-retargeted CSV clips (HuggingFace `lvhaidong/LAFAN1_Retargeting_Dataset`) → 50 Hz npz (2.45 h).
+- **BONES-SEED**: `g1.tar.gz` from HuggingFace `bones-studio/seed` (142,220 clips at 120 fps) → streamed to 50 Hz npz
+  shards → name and feasibility filters (paper Appendix E) → an fp16 compact library (6.7 GB, resident on the GPU,
+  reference body states computed online by FK).
 
 ```bash
-uv run python scripts/data/csv_to_npz_batch.py --help
-uv run python scripts/data/filter_bones_seed.py --help
-uv run python scripts/data/build_library.py --help
+uv run python scripts/data/csv_to_npz_batch.py --input-dir data/raw/lafan1/g1 --output-dir data/npz/lafan1 --input-fps 30 --workers 16
+uv run python scripts/data/stream_bones_seed.py --help      # g1.tar.gz -> 50 Hz npz shards
+uv run python scripts/data/filter_bones_seed.py --help      # name + feasibility filters -> keep list
+uv run python scripts/data/build_library.py --help          # compact library (.pt)
+uv run python scripts/data/make_subset.py --help            # evaluation subsets (e.g. 2000 clips)
 ```
 
-`data/` 与 `logs/` 不入库。
+`data/` and `logs/` are not tracked.
 
-## 训练
+### Training
 
 ```bash
-# LAFAN1，论文观测口径，单卡
-env -u PYTHONPATH uv run sm-train --run-name e7 --data.npz-dir data/npz/lafan1 \
-  --env.num-envs 4096 --policy-trainer.batch-size 4096 --schedule.max-hours 3
+# LAFAN1, single GPU
+uv run sm-train --run-name lafan1_seq --data.npz-dir data/npz/lafan1 --env.obs-mode beyondmimic_seq \
+  --schedule.checkpoint-interval 2000
 
-# BONES-SEED 全量，紧凑库
-env -u PYTHONPATH uv run sm-train --run-name e5 --data.library data/library/bones_seed_compact.pt \
-  --env.num-envs 4096 --policy-trainer.batch-size 2048 --schedule.max-hours 20
+# Full BONES-SEED on the compact library, paper schedule (320k iterations)
+uv run sm-train --run-name bones_seq --data.library data/library/bones_seed_compact.pt --env.obs-mode beyondmimic_seq \
+  --schedule.checkpoint-interval 4000
 
-# 多卡：torchrun，一进程一卡（每 rank 自己的仿真与 buffer，梯度 all-reduce，lr × sqrt(world)）
-env -u PYTHONPATH uv run torchrun --nproc_per_node 4 -m supermimic.scripts.train --run-name e6 ...
-# 跳过坏卡：CUDA_VISIBLE_DEVICES=0,2,3 ... --nproc_per_node 3
+# Multi-GPU: torchrun, one process per GPU (each rank has its own simulator and replay buffer; gradients are
+# all-reduced; lr × sqrt(world size))
+uv run torchrun --nproc_per_node 2 -m supermimic.scripts.train --run-name bones_seq_2gpu ...
 
-# 可选：--env.anchor-obs（BeyondMimic 锚点相对观测，偏离论文），--resume <ckpt>
+# Also useful: --schedule.max-hours <h> (only decides when to stop; the LR schedule depends on iterations), --resume <ckpt>
 ```
 
-默认超参按论文 Table A.5/A.6：4096 环境、H=32、UTD 0.4、γ=0.99、critic 5 epoch × 4 minibatch、WM 每次更新 10 批。日志为 TensorBoard（`logs/<run>/tb`），每 `checkpoint-interval` 迭代存 `ckpt_XXXXXXX.pt`。
+Defaults follow the paper's Tables A.5 / A.6: 4096 environments, H = 32, UTD 0.4, γ = 0.99, critic 5 epochs × 4
+minibatches, 10 batches × 2048 windows per world-model update, 320k iterations, cosine decay to 0.03×. Logs go to
+TensorBoard (`logs/<run>/tb`).
 
-## 评测与可视化
+### Evaluation and inspection
 
 ```bash
-# Appendix F 整 clip benchmark
-env -u PYTHONPATH uv run python scripts/eval_benchmark.py --ckpt logs/e7/ckpt_latest.pt --npz-dir data/npz/lafan1
-env -u PYTHONPATH uv run python scripts/eval_benchmark.py --ckpt logs/e5/ckpt_latest.pt \
-  --npz-dir data/npz/bones_seed --clip-list data/npz/bones_seed/subset2000.txt --num-envs 1024
+# Appendix F whole-clip benchmark
+uv run python scripts/eval_benchmark.py --ckpt logs/lafan1_seq/ckpt_0018000.pt --npz-dir data/npz/lafan1
+uv run python scripts/eval_benchmark.py --ckpt logs/bones_seq/ckpt_0044000.pt --library data/library/bones_seed_compact.pt
 
-# 交互式 replay（原生 MuJoCo 窗口；无显示时 --viewer viser → http://localhost:8080）
-env -u PYTHONPATH uv run python scripts/play.py --ckpt logs/e7/ckpt_latest.pt --clips dance1_subject1
+# Failures per motion group (paper Table A.8)
+uv run python scripts/eval_groups.py --benchmark logs/bones_seq/benchmark_ckpt_0044000.json
+
+# Where the reset sampler sends its resets (CPU only)
+uv run python scripts/sampler_report.py --ckpt logs/bones_seq/ckpt_0044000.pt --library data/library/bones_seed_compact.pt
+
+# MP4 with the reference ghost and per-step termination errors (EGL when there is no display)
+MUJOCO_GL=egl uv run python scripts/render_video.py --ckpt logs/bones_seq/ckpt_0044000.pt \
+  --library data/library/bones_seed_compact.pt --pattern '^flip_180_' --max-clips 3 --out videos/
+
+# Interactive replay (MuJoCo window with a display, otherwise viser at http://localhost:8080)
+uv run python scripts/play.py --ckpt logs/lafan1_seq/ckpt_latest.pt --clips dance1_subject1
 ```
 
-## 与论文的对应及已知差异
+## Repository layout
 
-- 实现了 Algorithm A.1 全流程、Table A.1–A.6 的观测/奖励/终止/网络/超参、Appendix F 评测协议、D 节域随机化（sim context ξ）。
-- 论文未指明之处（U1–U20）的取舍记录在 `docs/upstream/REPRODUCTION_PLAN.md` 第 4 节；实测后改动的决定记录在 `docs/upstream/EXPERIMENTS.md`。
-- 未做：速度接口与蒸馏、PPO-Sim/PPO-WM 基线、H×critic 消融、ONNX 导出、真机。
-- mjlab 的 `csv_to_npz` 四元数 slerp 在相邻帧几乎相同时会提前返回（姿态滞后一帧），本仓库用自己的向量化 slerp（与 scipy 一致到 1e-9）。
-- MuJoCo Warp 的 solver 溢出 printf 是编译期常量，必须在 `put_model` 后、图捕获前关闭，否则早期策略每步触发、仿真慢 10×。
-- torchrun 下 MuJoCo Warp 总在第一张可见卡上，需按 rank 设置 `CUDA_VISIBLE_DEVICES`（`scripts/train.py` 自动处理）。
+```
+src/supermimic/
+  config.py              training configuration (tyro CLI)
+  data/                  CSV -> npz conversion, replay buffer
+  envs/                  mjlab environment: motion library (incl. compact), multi-clip command with return-based
+                         resets, observations, rewards, terminations
+  kinematics/            differentiable G1 forward kinematics, rotation utilities
+  world_model/           world model (dynamics MLP, learned termination head, analytic observation / reward heads)
+                         and its trainer
+  imagination/           imagined rollouts (whole step compiled + CUDA graphs), goals, Eq. 2 objective,
+                         policy / critic trainer
+  policy/                policy (motion encoder + decoder) and critic
+  training/              main loop, multi-GPU, LR schedule, optimizer utilities
+  eval/                  Appendix F benchmark
+scripts/                 data preparation, evaluation, grouping, visualization, performance tools
+tests/                   unit and GPU integration tests (reward / observation parity, world model, imagination, sampler)
+docs/                    project documentation (below)
+```
+
+## Documentation (in Chinese)
+
+| File | Contents |
+|---|---|
+| `docs/PROJECT.md` | Overview, modules, feature status |
+| `docs/CONCEPTS.md` | Terms: normalized return, failed motion, observation settings, iterations and UTD, return-based sampling, imagination |
+| `docs/CONTRACTS.md` | Hard rules: reporting and comparing with the paper, benchmark protocol, numerical conventions |
+| `docs/experiences/` | Pitfalls and reusable lessons (`INDEX.md`) |
+| `docs/changes/archive/` | Design, plan, review and validation of every change (by change ID) |
+| `docs/upstream/` | The upstream repository's original documents (read-only reference) |
+
+Development follows ChangeFlow (`AGENTS.md`): each change gets a design and a plan, then implementation, review and
+validation before it is archived.
+
+## Acknowledgements and license
+
+- Upstream implementation: [CuboiLeo/SuperMimic-Reproduced](https://github.com/CuboiLeo/SuperMimic-Reproduced) (Yuxi Liu).
+- Simulation and the tracking task: [mjlab](https://github.com/mujocolab/mjlab), MuJoCo Warp.
+- Data: LAFAN1 (G1-retargeted), BONES-SEED (bones-studio).
+- Paper: Qiayuan Liao et al., *SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model*,
+  CoRL 2026.
+
+MIT License, see `LICENSE` (the upstream copyright notice is kept).
