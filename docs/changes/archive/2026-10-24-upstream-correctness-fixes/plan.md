@@ -40,7 +40,7 @@
 - [x] T16 — 续训冒烟：LAFAN1 训练 300 迭代后从 `ckpt_latest.pt` `--resume` 再训 100 迭代，确认日志先出现 warmup 采样、无空 buffer 报错 · `logs/resume_smoke/`
 - [x] T17 — 对照重跑：`sm-train --run-name lafan1_now_fixed --data.npz-dir data/npz/lafan1 --env.obs-mode anchor_ori_now --schedule.max-hours 2 --schedule.checkpoint-interval 2000`（与修复前 `lafan1_now` 完全同配置）· `logs/lafan1_now_fixed/`
 - [x] T18 — 训练结束后评测全部 checkpoint 与 `ckpt_latest`（`scripts/eval_benchmark.py --npz-dir data/npz/lafan1`）· `logs/lafan1_now_fixed/`
-- [x] T19 — 与修复前 `lafan1_now` 逐点对比：评测回报（论文 §4）、失败数、训练日志的 `wm/term_acc`、`policy/imag_survival_H`、`policy/skipped_nonfinite` 计数，写入 `validation.md` · `docs/changes/active/2026-10-24-upstream-correctness-fixes/validation.md`
+- [x] T19 — 与修复前 `lafan1_now` 逐点对比：评测回报（论文 §4）、失败数、训练日志的 `wm/term_acc`、`policy/imag_survival_H`、`policy/skipped_nonfinite` 计数，写入 `validation.md` · `docs/changes/archive/2026-10-24-upstream-correctness-fixes/validation.md`
 
 ## Files to change
 - `src/supermimic/data/replay_buffer.py`：窗口 `done` 取转移行标签；docstring
@@ -49,14 +49,14 @@
 - `src/supermimic/training/loop.py`：warmup 按本次运行计数
 - `src/supermimic/imagination/policy_trainer.py`：`clip_and_step`，策略与 critic 使用并记录跳过次数
 - `tests/test_replay_labels.py`、`tests/test_quat_error.py`、`tests/test_clip_and_step.py`（新）
-- `docs/changes/active/2026-10-24-upstream-correctness-fixes/validation.md`（验证阶段）
+- `docs/changes/archive/2026-10-24-upstream-correctness-fixes/validation.md`（验证阶段）
 
 与活动 change `2026-10-24-paper-faithful-reproduction` 重叠：`training/loop.py`、`imagination/policy_trainer.py`。其代码已在 `d24eda8` 提交，本分支从它拉出，正常合并即可；注意它在 GPU 机上仍有运行中的任务，D 组之前不同步。
 
 ## Tests
 - [x] Unit tests — `test_replay_labels.py`（标签对齐，CPU）、`test_quat_error.py`（前向一致 + 零误差梯度有限）、`test_clip_and_step.py`（非有限跳过）
 - [x] Integration tests — 全部现有测试在 GPU 机通过（尤其 `test_world_model`、`test_imagination`、`test_analytic_heads` 的奖励对拍不变）
-- [ ] Benchmark or performance tests — none（本 change 不涉及性能；`clip_and_step` 的有限性判断与现有 `float(gn)` 同处同步，不新增同步）
+- [x] Benchmark or performance tests — none（本 change 不涉及性能；`clip_and_step` 的有限性判断与现有 `float(gn)` 同处同步，不新增同步）
 - [x] Manual validation — T16 续训冒烟；T17–T19 LAFAN1 修复前后对照
 
 ## Contract updates

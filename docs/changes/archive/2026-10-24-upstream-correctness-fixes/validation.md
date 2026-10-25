@@ -68,3 +68,17 @@ PYTHONPATH=<tree>/src sm-train --run-name resume_fixed@A ... (same two legs)    
 - 评测回报在 4k–8k 次迭代时修复后高 0.01–0.03，到 9600 次迭代基本相同（0.768 对 0.766），失败数在 ±2 以内。
   单种子下这个差距和噪声处在同一量级，**不能**说修复提高了最终性能；能确定的是修复**没有造成退化**，早期学习更快。
 - 2 h / 9600 次迭代下 LAFAN1 仍是 0.77，没有达到论文的 0.82：瓶颈不在这三处 bug。
+
+## change-validate（2026-10-26）
+重新运行（代码 `fdd122b`，远程 tree 已同步，`supermimic.__file__` 指向本 tree 的 `src/`，CPU，`CUDA_VISIBLE_DEVICES=""`，机器 B）：
+```bash
+PYTHONPATH=<tree>/src CUDA_VISIBLE_DEVICES="" $PY -m pytest tests/test_replay_labels.py tests/test_quat_error.py tests/test_clip_and_step.py -q
+```
+rc=0：**5 passed, 1 warning**（5.9 s）。
+GPU 集成测试（全部测试）在包含本 change 全部代码的后续分支上重新运行过：`2026-10-25-sampler-attainable-return` 的 `d833b81`，
+机器 A，2026-10-25 12:37–13:03，**49 passed**（见该 change 的 validation）。本 tree 上 GPU 全量测试的最近一次为 T15（39 passed）。
+
+## Known gaps
+- 修复前后对照为每边单种子，结论按迭代对齐的趋势下（见上文）。
+- 四元数 NaN 在以往全部训练日志中从未出现（扫描 TB 非有限值数量为 0），修复只是防护，未观测到训练层面的影响。
+- 多卡路径（critic 跳过判断的 all-reduce，review P2）只有代码审查与单卡测试，未在多卡上实测。

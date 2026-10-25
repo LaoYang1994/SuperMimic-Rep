@@ -36,3 +36,5 @@ required.
 - 四元数一律 **wxyz**（`kinematics/rotations.py`）。外部数据（如 G1 重定向 CSV 的 xyzw）
   只在 `data/motion_convert.py` 的边界处转换。
 - 控制频率 50 Hz；动作库统一重采样到 50 Hz。
+- Replay 窗口的终止标签 `done[j]` 是第 j 个转移（s_j → s_{j+1}）结果的终止标签，即 s_{j+1} 是否触发终止；
+  超时截断（clip 结束、时长上限）不算终止。`tests/test_replay_labels.py` 守护这条约定。
