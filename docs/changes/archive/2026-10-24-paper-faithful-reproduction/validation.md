@@ -117,12 +117,12 @@ GPU 机：1× RTX PRO 6000 Blackwell 96 GB，容器 64 核 / 128 GiB；torch 2.1
   - 早期阶段（随机初始化后第 80–100 次迭代）为 949 ms/迭代，同样的发射/同步量级；稳态与早期瓶颈一致。
 
 ## change-validate（2026-10-26）
-重新运行（远程主 tree 的 `src`，代码 `64df684`，`supermimic.__file__` 已核对，CPU，`CUDA_VISIBLE_DEVICES=""`，机器 B）：
+重新运行（远程主 tree 的 `src`，代码 `2929b30`，`supermimic.__file__` 已核对，CPU，`CUDA_VISIBLE_DEVICES=""`，机器 B）：
 ```bash
 PYTHONPATH=$SM_REPO/src CUDA_VISIBLE_DEVICES="" $PY -m pytest tests/test_schedule.py tests/test_analytic_heads.py tests/test_motion_library_compact.py tests/test_g1_fk.py -q
 ```
 rc=0：**6 passed, 10 skipped**（跳过的是需要 CUDA 的四口径 goal 对拍等）。CUDA 下的全部测试：T36 33 passed / 0 skipped；
-包含本 change 代码的后续分支 `7c18a10` 上 49 passed（2026-10-25，机器 A）。
+包含本 change 代码的后续分支 `dd91147` 上 49 passed（2026-10-25，机器 A）。
 
 ## 复现目标达成情况（归档时）
 | 目标（design） | 结果 | 状态 |

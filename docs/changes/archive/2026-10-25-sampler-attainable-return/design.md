@@ -47,7 +47,7 @@ BONES-SEED 全量（129,511 条，`beyondmimic_seq`，fix+加速 `bones_seq_fast
 ## Clarifications
 - Q: 用哪种修法？ → A: 方案 A——按可达回报归一化（不选 B 自举 / C 合并末尾 bin）。
 - Q: 验证实验放哪里？ → A: 停 A 的 fix 版全量；A 跑修复后的全量；B 继续作为旧采样器基线。
-- Q: change 文档放哪里？ → A: 按现规定放主 checkout 的 `docs/changes/active/`，代码在 worktree `.worktrees/2026-10-25-sampler-attainable-return`（分支自 `change/2026-10-24-training-throughput` 的 `221ce2e`）。
+- Q: change 文档放哪里？ → A: 按现规定放主 checkout 的 `docs/changes/active/`，代码在 worktree `.worktrees/2026-10-25-sampler-attainable-return`（分支自 `change/2026-10-24-training-throughput` 的 `c83f72f`）。
 
 ## Assumptions
 - 论文的 G_max 指"可达的最大折现回报"，按每步剩余时长取值不违背其定义；论文实现细节未知。

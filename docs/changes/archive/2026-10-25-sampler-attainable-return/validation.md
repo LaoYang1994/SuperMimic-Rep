@@ -1,8 +1,8 @@
 # Validation
 
-环境：机器 A（1×RTX PRO 6000），远程 tree `.worktrees/2026-10-25-sampler-attainable-return`（`7c18a10`），
+环境：机器 A（1×RTX PRO 6000），远程 tree `.worktrees/2026-10-25-sampler-attainable-return`（`dd91147`），
 `PYTHONPATH=<tree>/src`（启动时打印的 `supermimic.__file__` 已核对）。BONES-SEED 紧凑库 129,511 条，`beyondmimic_seq`（论文口径），
-迭代 = 更新。基线 = `bones_seq_fast@B`（同为 fix + 加速，旧采样器，`221ce2e`，机器 B）。
+迭代 = 更新。基线 = `bones_seq_fast@B`（同为 fix + 加速，旧采样器，`c83f72f`，机器 B）。
 
 ## T17 停止 `bones_seq_fix@A`（2026-10-25 12:36）
 `kill 53436`（sm-train PID，未用 `pkill -f`）→ 训练退出码 143，停在第 52,800 次迭代（12.11 h，1.2 次/s）；
@@ -89,7 +89,7 @@ A 的前 2,000 个困难 bin：拉丁 / 街舞套路、爬行（`crawl_ff_*`）�
 - 温度 25 下困难采样高度集中（单个 bin 占 29%），是论文公式本身的性质；困难采样会轮流集中在少数最难的动作上。
 
 ## T20（部分）第 40,000 次迭代全量评测（2026-10-25 19:44，A 新采样器 vs B 旧采样器）
-BONES-SEED 全量 129,511 条，`beyondmimic_seq`，1×RTX PRO 6000，迭代 = 更新；两边代码只差采样器（A `7c18a10`，B `221ce2e`）；
+BONES-SEED 全量 129,511 条，`beyondmimic_seq`，1×RTX PRO 6000，迭代 = 更新；两边代码只差采样器（A `dd91147`，B `c83f72f`）；
 `scripts/eval_benchmark.py`（附录 F.1 协议），分组 `scripts/eval_groups.py`；回报 = 论文 §4 归一化回报 clip 均值。训练时长：A 4.9 h（含 40k 时同时评测），B 约 4.6 h。
 
 | 组 | B 旧采样器 | A 新采样器 | 论文 1 卡 3 h | SONIC |
