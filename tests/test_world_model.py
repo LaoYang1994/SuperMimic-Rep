@@ -67,6 +67,23 @@ def test_world_model_overfits_replay_windows():
         wm = WorldModel(WorldModelCfg(hidden=(512, 512, 512)), heads, env.device)
         lib = env.command_manager.get_term("motion").library
         tr = WorldModelTrainer(wm, lib, WMTrainerCfg(batch_size=512, batches_per_update=1, lr=1e-3))
+        # The compiled + CUDA-graph window loss equals the eager one (loss, metrics, gradients).
+        wb = rec.buffer.sample_windows(512, 8)
+        res = {}
+        for mode in ("reduce-overhead", None):
+            wm.enable_compile(mode)
+            for _ in range(3):  # warm-up, record, replay
+                wm.zero_grad(set_to_none=True)
+                loss, m = tr.loss_on(wb)
+                loss.backward()
+            res[mode] = (loss.detach().clone(), m, torch.cat([p.grad.flatten() for p in wm.parameters() if p.grad is not None]))
+        wm.enable_compile("reduce-overhead")
+        (lc, mc, gc), (le, me, ge) = res["reduce-overhead"], res[None]
+        torch.testing.assert_close(lc, le, rtol=1e-4, atol=1e-6)
+        for k in me:
+            torch.testing.assert_close(mc[k], me[k], rtol=1e-3, atol=1e-6, msg=k)
+        assert (gc - ge).abs().max() <= 1e-3 * ge.abs().max()
+        wm.zero_grad(set_to_none=True)
         e0 = tr.online_error(rec.buffer, n=1024, k=8)
         for _ in range(300):
             m = tr.update(rec.buffer)

@@ -21,7 +21,7 @@ class WMTrainerCfg:
     lr: float = 2e-4
     grad_clip: float = 1.0
     weight_decay: float = 0.0
-    compile: str | None = "default"
+    compile: str | None = "reduce-overhead"  # whole k-step window loss, replayed as CUDA graphs
 
 
 def reference_at(lib: MotionLibrary, frame: torch.Tensor) -> ReferenceFrame:
@@ -35,7 +35,9 @@ class WorldModelTrainer:
         self.wm = wm
         self.lib = lib
         self.cfg = cfg
-        self.opt = torch.optim.Adam(wm.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+        # fused: one kernel per step with `step` kept on the GPU (the default implementation reads a GPU `step`
+        # with .item() per parameter after a checkpoint load -> one host sync per parameter per step).
+        self.opt = torch.optim.Adam(wm.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, fused=True)
         wm.enable_compile(cfg.compile)
 
     def set_lr(self, lr: float) -> None:
@@ -50,9 +52,15 @@ class WorldModelTrainer:
         return self.wm.window_loss(w.states, w.a_exec, w.xi, w.done, refs)
 
     def update(self, buffer: ReplayBuffer) -> dict[str, float]:
+        # Sampling consumes the only randomness here, so sampling all batches first draws the same windows; the
+        # buffer does not change in between, so one window mask serves every batch.
+        mask = buffer.window_mask(self.cfg.window)
+        return self.update_on([buffer.sample_windows(self.cfg.batch_size, self.cfg.window, mask) for _ in range(self.cfg.batches_per_update)])
+
+    def update_on(self, batches: list[WindowBatch]) -> dict[str, float]:
+        """One update (``batches_per_update`` optimizer steps) on pre-sampled windows."""
         agg: dict[str, torch.Tensor] = {}
-        for _ in range(self.cfg.batches_per_update):
-            w = buffer.sample_windows(self.cfg.batch_size, self.cfg.window)
+        for w in batches:
             loss, m = self.loss_on(w)
             self.opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -64,7 +72,7 @@ class WorldModelTrainer:
             for k, v in m.items():
                 agg[k] = agg.get(k, 0.0) + v
         # Single host sync per update (keeps the CPU queuing GPU work across minibatches).
-        return {k: float(v) / self.cfg.batches_per_update for k, v in agg.items()}
+        return {k: float(v) / len(batches) for k, v in agg.items()}
 
     @torch.no_grad()
     def online_error(self, buffer: ReplayBuffer, n: int = 1024, k: int = 8) -> torch.Tensor:

@@ -6,12 +6,12 @@ from dataclasses import dataclass
 
 import torch
 
-from supermimic.data.replay_buffer import ReplayBuffer
+from supermimic.data.replay_buffer import ReplayBuffer, StartBatch
 from supermimic.envs.mdp.motion_library import MotionLibrary
 from supermimic.imagination.objective import gae_targets, policy_objective
 from supermimic.imagination.rollout import ImagRollout, imagine
 from supermimic.policy.nets import Critic, Policy
-from supermimic.training.distributed import allreduce_grads
+from supermimic.training.distributed import allreduce_grads, allreduce_max_
 from supermimic.world_model.world_model import WorldModel
 
 
@@ -33,18 +33,49 @@ class PolicyTrainerCfg:
     critic_minibatches: int = 4
     use_critic: bool = True
     obs_noise: bool = True
-    compile: str | None = "default"
+    # torch.compile mode of the imagined step; "reduce-overhead" replays it as CUDA graphs (the compiled step
+    # still has hundreds of kernels per call, so launch overhead dominates without graphs).
+    compile: str | None = "reduce-overhead"
     obs_mode: str = "proprio_only"  # config.ObsMode; the Trainer copies EnvCfg.obs_mode here
+
+
+def fused_step(opt: torch.optim.Optimizer, skip: torch.Tensor) -> None:
+    """``opt.step()`` that is a no-op where ``skip`` (0-dim float32 GPU tensor) is 1: fused Adam's ``found_inf``
+    leaves weights, moments and ``step`` unchanged. No host sync."""
+    if not opt.defaults.get("fused"):
+        raise ValueError("fused_step needs a fused optimizer (found_inf is only supported there)")
+    opt.found_inf = skip
+    try:
+        opt.step()
+    finally:
+        del opt.found_inf
+
+
+def clip_and_step(opt: torch.optim.Optimizer, params, max_norm: float, clip_value: float | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """Clip gradients and step, unless the total gradient norm is non-finite: then the step is skipped so one
+    NaN/Inf cannot reach the weights or the optimizer moments.
+
+    Returns (total grad norm before clipping, skipped as a 0-dim float tensor). The decision stays on the GPU.
+    Gradients must already be all-reduced in data-parallel runs, so every rank takes the same decision.
+    """
+    params = [p for p in params if p.grad is not None]
+    gn = torch.nn.utils.clip_grad_norm_(params, max_norm)
+    if clip_value is not None:
+        torch.nn.utils.clip_grad_value_(params, clip_value)
+    skipped = (~torch.isfinite(gn)).float()
+    fused_step(opt, skipped)
+    return gn, skipped
 
 
 class PolicyTrainer:
     def __init__(self, wm: WorldModel, policy: Policy, critic: Critic, lib: MotionLibrary, cfg: PolicyTrainerCfg):
         self.wm, self.policy, self.critic, self.lib, self.cfg = wm, policy, critic, lib, cfg
-        self.opt = torch.optim.Adam(policy.parameters(), lr=cfg.lr, betas=cfg.betas)
-        self.critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr)
-        from supermimic.imagination.compiled import ImagStep
+        # fused: see WorldModelTrainer.
+        self.opt = torch.optim.Adam(policy.parameters(), lr=cfg.lr, betas=cfg.betas, fused=True)
+        self.critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr, fused=True)
+        from supermimic.imagination.compiled import ImagRolloutStep
 
-        self.step_fn = ImagStep(wm, lib.default_joint_pos, compile_mode=cfg.compile)
+        self.step_fn = ImagRolloutStep(wm, policy, lib.default_joint_pos, cfg.obs_mode, compile_mode=cfg.compile)
 
     def set_lr(self, lr: float) -> None:
         for g in self.opt.param_groups:
@@ -58,8 +89,11 @@ class PolicyTrainer:
         return feat, ro.goals, ro.e_root
 
     def update(self, buffer: ReplayBuffer, xi_norm_fn=None) -> dict[str, float]:
+        return self.update_on(buffer.sample_starts(self.cfg.batch_size, self.cfg.history))
+
+    def update_on(self, start: StartBatch) -> dict[str, float]:
+        """One actor + critic update from pre-sampled imagination start states."""
         cfg = self.cfg
-        start = buffer.sample_starts(cfg.batch_size, cfg.history)
         xi_norm = self.wm.spec.normalize_xi(start.xi)
 
         # ---- actor: BPTT through the frozen world model ------------------------------------
@@ -76,9 +110,7 @@ class PolicyTrainer:
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
         allreduce_grads(self.policy)
-        gn = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), cfg.grad_clip_norm)
-        torch.nn.utils.clip_grad_value_(self.policy.parameters(), cfg.grad_clip_value)
-        self.opt.step()
+        gn, skipped = clip_and_step(self.opt, self.policy.parameters(), cfg.grad_clip_norm, cfg.grad_clip_value)
         self.wm.requires_grad_(True)
         self.critic.requires_grad_(True)
 
@@ -89,6 +121,7 @@ class PolicyTrainer:
             "imag_survival_H": float(ro.survival[-1].mean().detach()),
             "imag_dhat_mean": float(ro.dhat[1:].mean().detach()),
             "policy_grad_norm": float(gn),
+            "skipped_nonfinite": float(skipped),
             "action_abs_mean": float(ro.actions.abs().mean().detach()),
         }
         for k, v in ro.reward_terms.items():
@@ -107,6 +140,12 @@ class PolicyTrainer:
                 X_xi = xi_rep[:-1].reshape(-1, xi_rep.shape[-1])
                 X_er = e_root_d[:-1].reshape(-1, 4)
                 Y = targets.reshape(-1)
+                # One host sync per update (not per minibatch): inputs and targets are detached rollout
+                # quantities, so if they are finite the clipped critic gradients are too. Every critic
+                # minibatch all-reduces its gradients, so all ranks must agree: skip if any rank is non-finite.
+                skip = (~torch.stack([torch.isfinite(t).all() for t in (X_feat, X_goal, X_xi, X_er, Y)]).all()).float()
+                allreduce_max_(skip)
+            metrics["critic_skipped_nonfinite"] = float(skip)
             N = Y.shape[0]
             mb = N // cfg.critic_minibatches
             last = torch.zeros((), device=Y.device)
@@ -120,8 +159,9 @@ class PolicyTrainer:
                     closs.backward()
                     allreduce_grads(self.critic)
                     torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.critic_grad_clip)
-                    self.critic_opt.step()
+                    fused_step(self.critic_opt, skip)
                     last = closs.detach()
+            last = torch.where(skip > 0, torch.zeros_like(last), last)
             metrics["critic_loss"] = float(last)
             metrics["critic_value_mean"] = float(values.mean())
             metrics["critic_target_mean"] = float(targets.mean())

@@ -81,6 +81,13 @@ def allreduce_mean(x: float) -> float:
     return float(t)
 
 
+def allreduce_max_(t: torch.Tensor) -> torch.Tensor:
+    """In-place MAX all-reduce of a GPU tensor (no host sync)."""
+    if world_size() > 1:
+        dist.all_reduce(t, op=dist.ReduceOp.MAX)
+    return t
+
+
 def finalize() -> None:
     if dist.is_available() and dist.is_initialized():
         dist.destroy_process_group()

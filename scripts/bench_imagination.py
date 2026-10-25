@@ -14,7 +14,7 @@ def main(batch: int = 2048, horizon: int = 32, modes: tuple[str, ...] = ("eager"
     from supermimic.data.replay_buffer import StartBatch
     from supermimic.envs.mdp.motion_library import MotionLibrary, discover_npz
     from supermimic.envs.tracking_env_cfg import ANCHOR_BODY, ROOT_BODY, TRACKED_BODIES
-    from supermimic.imagination.compiled import ImagStep
+    from supermimic.imagination.compiled import ImagRolloutStep
     from supermimic.imagination.objective import policy_objective
     from supermimic.imagination.rollout import imagine
     from supermimic.kinematics.g1_fk import G1Kinematics
@@ -47,7 +47,7 @@ def main(batch: int = 2048, horizon: int = 32, modes: tuple[str, ...] = ("eager"
         hist_actions=torch.zeros(10, batch, 29, device=dev),
     )
     for mode in modes:
-        step_fn = ImagStep(wm, q0, compile_mode=None if mode == "eager" else mode)
+        step_fn = ImagRolloutStep(wm, policy, q0, "proprio_only", compile_mode=None if mode == "eager" else mode)
         wm.requires_grad_(False)
         times = []
         for i in range(reps + 1):
