@@ -8,7 +8,8 @@ near that. The policy looks unaffected: policy gradient norm and imagined return
 
 ## Root cause
 The world model predicts a fall (survival ĉ_t → 0, exactly 0 once the sigmoid saturates in fp32), but the H-step
-imagined rollout keeps going. Out of distribution, the unbounded policy actions and the extrapolating dynamics feed
+imagined rollout keeps going. (Inferred from interval means, not observed per sample: in the spike intervals Σĉr
+stayed at its normal value while the mean r̂ was −10¹³, so the runaway samples must have ĉ ≈ 0.) Out of distribution, the unbounded policy actions and the extrapolating dynamics feed
 each other (mean |a| 1 → 10³–10⁶); the action-rate penalty is quadratic in Δa and unbounded below, so r̂ reaches −10¹⁷.
 - The policy objective Σ γᵗ ĉ_t r̂_{t+1} weights these steps by ĉ_t ≈ 0: nothing reaches the policy.
 - The critic loss of the paper (Eq. 3, Σ_t (V_t − R̂_t)²) is unweighted: it fits garbage inputs (critic output −10⁸)
