@@ -91,6 +91,7 @@ class Trainer:
         for m in (self.wm, self.policy, self.critic):
             broadcast_params(m)
         self.wm_trainer = WorldModelTrainer(self.wm, self.lib, cfg.wm_trainer)
+        cfg.policy_trainer.g_max = heads.reward_cfg.max_step_reward / (1.0 - cfg.policy_trainer.gamma)
         self.policy_trainer = PolicyTrainer(self.wm, self.policy, self.critic, self.lib, cfg.policy_trainer)
         n_params = lambda m: sum(p.numel() for p in m.parameters())  # noqa: E731
         if self.is_main:

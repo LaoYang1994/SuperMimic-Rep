@@ -31,11 +31,15 @@ def test_gae_targets_match_hand_computation():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or not NPZ.exists(), reason="needs CUDA + LAFAN1 npz")
-def test_training_smoke(tmp_path):
+@pytest.mark.parametrize("legacy_policy_update", [False, True])  # True: no critic clamp, upstream -J / H
+def test_training_smoke(tmp_path, legacy_policy_update):
     from supermimic.config import TrainConfig
     from supermimic.training.loop import Trainer
 
     cfg = TrainConfig(run_name="smoke", log_root=tmp_path, seed=1)
+    if legacy_policy_update:
+        cfg.policy_trainer.critic_value_clip = False
+        cfg.policy_trainer.objective_divide_by_horizon = True
     cfg.data.clips = ["walk1_subject1"]
     cfg.env.num_envs = 128
     cfg.env.replay_capacity = 200

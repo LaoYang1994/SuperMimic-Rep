@@ -8,7 +8,7 @@ import torch
 
 from supermimic.data.replay_buffer import ReplayBuffer, StartBatch
 from supermimic.envs.mdp.motion_library import MotionLibrary
-from supermimic.imagination.objective import gae_targets, policy_objective
+from supermimic.imagination.objective import clamp_values, gae_targets, policy_loss, policy_objective
 from supermimic.imagination.rollout import ImagRollout, imagine
 from supermimic.policy.nets import Critic, Policy
 from supermimic.training.distributed import allreduce_grads, allreduce_max_
@@ -32,6 +32,13 @@ class PolicyTrainerCfg:
     critic_epochs: int = 5
     critic_minibatches: int = 4
     use_critic: bool = True
+    # Clamp critic estimates to [-g_max, g_max] where they are used (V_H in the policy objective, values in the GAE
+    # targets). Not in the paper; without it the critic over-estimates a few states late in long runs and the policy
+    # follows (BONES-SEED: values up to 36.8 > 10 after ~145k iterations, then collapse).
+    critic_value_clip: bool = True
+    g_max: float = 10.0  # largest attainable discounted return; the Trainer sets max_step_reward / (1 - gamma)
+    # True reproduces the upstream loss -J / H, under which the gradient clipping below never triggers.
+    objective_divide_by_horizon: bool = False
     obs_noise: bool = True
     # torch.compile mode of the imagined step; "reduce-overhead" replays it as CUDA graphs (the compiled step
     # still has hundreds of kernels per call, so launch overhead dominates without graphs).
@@ -103,10 +110,12 @@ class PolicyTrainer:
         feat, goals, e_root = self._critic_inputs(ro)
         if cfg.use_critic:
             v_H = self.critic(feat[-1], goals[-1], xi_norm, e_root[-1])
+            if cfg.critic_value_clip:
+                v_H, vH_clamped = clamp_values(v_H, cfg.g_max)
         else:
             v_H = None
         J = policy_objective(ro, v_H, cfg.gamma)
-        loss = -J / cfg.horizon
+        loss = policy_loss(J, cfg.horizon, cfg.objective_divide_by_horizon)
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
         allreduce_grads(self.policy)
@@ -121,9 +130,12 @@ class PolicyTrainer:
             "imag_survival_H": float(ro.survival[-1].mean().detach()),
             "imag_dhat_mean": float(ro.dhat[1:].mean().detach()),
             "policy_grad_norm": float(gn),
+            "grad_clipped": float(gn > cfg.grad_clip_norm),  # non-finite gn counts too: see skipped_nonfinite
             "skipped_nonfinite": float(skipped),
             "action_abs_mean": float(ro.actions.abs().mean().detach()),
         }
+        if cfg.use_critic and cfg.critic_value_clip:
+            metrics["critic_vH_clamped_frac"] = float(vH_clamped)
         for k, v in ro.reward_terms.items():
             metrics[f"imag_r/{k}"] = v
 
@@ -134,6 +146,9 @@ class PolicyTrainer:
                 H1, n, _ = feat_d.shape
                 xi_rep = xi_norm[None].expand(H1, n, -1)
                 values = self.critic(feat_d.reshape(H1 * n, -1), goals_d.reshape(H1 * n, -1), xi_rep.reshape(H1 * n, -1), e_root_d.reshape(H1 * n, -1)).reshape(H1, n)
+                values_raw = values
+                if cfg.critic_value_clip:
+                    values, values_clamped = clamp_values(values, cfg.g_max)
                 targets = gae_targets(ro.rewards.detach(), ro.dhat[1:].detach(), values, cfg.gamma, cfg.gae_lambda)  # (H, n)
                 X_feat = feat_d[:-1].reshape(-1, feat_d.shape[-1])
                 X_goal = goals_d[:-1].reshape(-1, goals_d.shape[-1])
@@ -163,6 +178,8 @@ class PolicyTrainer:
                     last = closs.detach()
             last = torch.where(skip > 0, torch.zeros_like(last), last)
             metrics["critic_loss"] = float(last)
-            metrics["critic_value_mean"] = float(values.mean())
+            metrics["critic_value_mean"] = float(values_raw.mean())  # before clamping: over-estimation stays visible
+            if cfg.critic_value_clip:
+                metrics["critic_values_clamped_frac"] = float(values_clamped)
             metrics["critic_target_mean"] = float(targets.mean())
         return metrics
