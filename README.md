@@ -14,7 +14,7 @@ This repository is forked from [CuboiLeo/SuperMimic-Reproduced](https://github.c
 upstream author on RTX 5090s under the upstream protocol and are not results of this repository. Project
 documentation under `docs/` is written in Chinese.
 
-## Status (2026-10-26)
+## Status (2026-10-27)
 
 Hardware: 1× RTX PRO 6000 Blackwell 96 GB. Iteration = one update (UTD 0.4, on average 2.5 simulator steps per
 update). Return = the paper's normalized return (§4): reward sum / (0.1 × number of steps of the whole clip), evaluated
@@ -29,12 +29,14 @@ training termination condition fires.
 | BONES-SEED feasibility filter: 129,514 clips / 264.56 h | 129,511 / 263.08 h (thresholds not published; 3 clips off) | ≈ |
 | World-model 8-step prediction error 0.007–0.011 | 0.008–0.010 | ✓ |
 | LAFAN1 single-GPU return 0.82 (1.2 h on an H100) | 0.821 at 18,000 iterations (`anchor_ori_now`) | return ✓, takes longer |
-| BONES-SEED single-GPU 3 h return > 0.90 | 0.934 at 44,000 iterations | ✓ |
-| BONES-SEED single-GPU 3 h failures 25 / 129,514 (SONIC: 179) | 210 / 129,511 at 44,000 iterations | ✗ (an order of magnitude off) |
+| BONES-SEED single-GPU 3 h (≈ 100k iterations) return > 0.90 | 0.939 at 104,000 iterations (0.941 at 88,000) | ✓ |
+| BONES-SEED single-GPU 3 h (≈ 100k iterations) failures 25 / 129,514 (SONIC: 179) | 58 / 129,511 at 104,000 iterations | ✗ (about 2×) |
 
-The paper reports times, not iteration counts. Calibrated on LAFAN1 (the paper's 1.2 h ≈ 16–19k of our iterations),
-the paper's 3 h corresponds to roughly **37–44k iterations** (an estimate), so BONES-SEED is compared with the paper's
-3 h results at 36k / 40k / 44k iterations.
+The paper reports times, not iteration counts. Its Fig. A.1 (failures vs. wall-clock, one point every 4,000
+iterations) has exactly 80 points on the 1-GPU curve, evenly spaced and ending at 9.37 h (the 2-GPU curve ends at
+9.79 h, matching the text's 9.8 h): about 34k iterations per hour on one H100 (9.5 it/s), so **the paper's 3 h is
+≈ 100k iterations**. Failures read off that curve (±3): 103 at 44k, about 30 at 88k, 27 at 100k, 14 at 148k, 6 at
+320k. (An earlier estimate calibrated on LAFAN1 put 3 h at 37–44k iterations; it was wrong.)
 
 ### LAFAN1 (40 clips, 2.45 h; `anchor_ori_now` = paper observations + 6-D anchor orientation)
 
@@ -55,6 +57,13 @@ updates.
 | 36,000 | 0.929 / 413 | 0.927 / **321** |
 | 40,000 | 0.929 / 425 | 0.929 / **253** |
 | 44,000 | 0.931 / 361 | 0.934 / **210** |
+| 88,000 | – | 0.941 / 67 |
+| 104,000 | – | 0.939 / **58** |
+| 148,000 | – | 0.918 / 80 |
+
+After 104k the return drops (standing motions drift horizontally), while the paper keeps improving. With the critic
+fixes below, the same setting gives 0.933 / 166 at 44k and 0.941 / 70 at 88k (no difference within single-seed noise)
+and no critic divergence over 169.6k iterations; the late drop remains (0.891 / 125 at 148k).
 
 Failures concentrate on flips, side rolls, fire-in-the-hole turns, lying down / standing up, kneeling and crawling, and
 jumps; walking, running and other everyday motions almost never fail. With the corrected sampler, flips went from 54/54
@@ -65,16 +74,19 @@ failed to about 20/54. Per-group failures (paper Table A.8) come from `scripts/e
 | Configuration | Upstream code | This repository |
 |---|---|---|
 | LAFAN1 (4096 environments, imagination batch 4096, H = 32) | 754 ms / iteration (1.33 it/s) | **371 ms / iteration (2.70 it/s)** |
-| Full BONES-SEED | 1.2 it/s | **2.4 it/s** |
+| Full BONES-SEED | 1.2 it/s | **2.4 it/s** (paper: about 9.5 it/s on an H100, from Fig. A.1) |
 
 Every speed-up was checked numerically on single updates, and training-level results were verified at matched
 iterations (no systematic difference from the pre-speed-up code on LAFAN1 and BONES-SEED).
 
 ### Not yet reached / next steps
 
-- BONES-SEED failures (210) are still far from the paper (25) and SONIC (179): fire-in-the-hole turns and broad jumps
-  are slightly worse with the new sampler, the sampler's estimates for rare motions update slowly, and the remaining
-  failures need a per-category analysis.
+- BONES-SEED failures are about twice the paper's at matched iterations (44k: 166–210 vs. 103; 88k: 67–82 vs. about
+  30), mostly jumps, flips and other hard motions. The reset sampler's hard share (40% of resets) goes almost entirely
+  to a few bins of a single clip for the whole run; fixing that is the next step.
+- The return drops after about 104k iterations (horizontal drift on long standing clips); the paper's curve keeps
+  improving.
+- Training is about 4× slower per iteration than the paper's H100 numbers; TF32 / bf16 have not been tried yet.
 - The paper does not give the grouping rules of Table A.8; the flips / lying / dance routine group sizes do not match.
 - The imagination vs. MuJoCo Warp throughput benchmark (paper Fig. 5a) has not been run.
 - All comparisons so far use a single seed.
@@ -98,6 +110,17 @@ iterations (no systematic difference from the pre-speed-up code on LAFAN1 and BO
 - The quaternion error had NaN gradients at zero error (`torch.where` does not block NaN from the discarded branch).
 - Resuming crashed on an empty replay buffer (warm-up collection now runs on every start).
 - Non-finite gradient guard: a step with NaN / Inf gradients is skipped, leaving weights and optimizer state unchanged.
+
+**Critic stability (not in the paper)**: long BONES-SEED runs went NaN (~152k iterations) or diverged (~196k).
+- Critic values are clamped to ±G_max = max step reward / (1 − γ) = 10 where they are used (V_H and the GAE inputs),
+  and GAE targets are clamped as the recursion goes.
+- The critic is fit only on imagined samples still alive (survival ≥ 0.001): after a predicted fall the imagined
+  rollout keeps running, actions and states blow up together (rewards down to −10³⁴), and an unweighted critic fit
+  absorbed those samples. Dead samples are treated as terminated (reward 0, value 0), by substitution, not
+  multiplication.
+- The policy loss is the paper's −J rather than upstream's −J/H, so the Table A.5 clipping (global norm 1.0, then
+  0.1 element-wise) actually fires; a critic minibatch with a non-finite gradient norm is skipped.
+- Interval logs keep the max / min of tail statistics (`*_max` / `*_min`), which an interval mean dilutes.
 
 **Return-based reset sampler**: each 1 s bin's estimate is now the return-to-go divided by the largest return
 attainable from that step (a completion in [0, 1]). On 129k clips the original estimate gave 94% of the hard-sampling
