@@ -42,6 +42,8 @@ class EnvCfg:
     reset_noise: bool = True
     domain_randomization: bool = True
     sampling_mode: str = "return"
+    # Largest share of the return sampler's hard mass per clip; 0 = the paper's softmax alone (not in the paper).
+    hard_clip_cap: float = 0.01
     replay_capacity: int = 1000
     future_frames: int = 10
     compact_library: bool = False

@@ -80,6 +80,7 @@ class SuperMimicEnvCfgArgs:
     reset_noise: bool = True
     domain_randomization: bool = True
     sampling_mode: str = "return"  # return | uniform | start
+    hard_clip_cap: float = 0.01  # MultiClipMotionCommandCfg.hard_clip_cap (0 = the paper's sampler)
     replay_capacity: int = 1000
     record_transitions: bool = True
     seed: int | None = 0
@@ -160,6 +161,7 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
             velocity_range=vel_range if a.reset_noise else {},
             joint_position_range=(-0.1, 0.1) if a.reset_noise else (0.0, 0.0),
             sampling_mode=a.sampling_mode,  # type: ignore[arg-type]
+            hard_clip_cap=a.hard_clip_cap,
             compact_library=a.compact_library,
             debug_vis=a.debug_vis,
             **a.extra_command_kwargs,

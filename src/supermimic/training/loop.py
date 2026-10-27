@@ -70,6 +70,7 @@ class Trainer:
                 reset_noise=cfg.env.reset_noise,
                 domain_randomization=cfg.env.domain_randomization,
                 sampling_mode=cfg.env.sampling_mode,
+                hard_clip_cap=cfg.env.hard_clip_cap,
                 replay_capacity=cfg.env.replay_capacity,
                 compact_library=cfg.env.compact_library,
                 obs_mode=cfg.env.obs_mode,
@@ -288,6 +289,8 @@ class Trainer:
                     self.writer.add_scalar("sampler/entropy", float(self.command.metrics["sampling_entropy"][0]), it)
                     self.writer.add_scalar("sampler/bin_return_mean", float(self.command.bin_return.mean()), it)
                     self.writer.add_scalar("sampler/hard_mass_clip_end_bins", float(self.command.metrics["hard_mass_clip_end"][0]), it)
+                    self.writer.add_scalar("sampler/hard_top_clip_share", float(self.command.metrics["hard_top_clip_share"][0]), it)
+                    self.writer.add_scalar("sampler/hard_eff_clips", float(self.command.metrics["hard_eff_clips"][0]), it)
                     dt_log = time.time() - last_log
                     last_log = time.time()
                     msg = (

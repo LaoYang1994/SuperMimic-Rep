@@ -21,6 +21,42 @@ def normalized_returns_to_go(rtg: torch.Tensor, n_star: torch.Tensor, gamma: flo
     return out.clamp(0.0, 1.0)
 
 
+def cap_group_mass(
+    h: torch.Tensor, group: torch.Tensor, num_groups: int, cap: float
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Limit every group's share of the probability vector ``h`` to ``cap`` (not in the paper).
+
+    h: (N,) probabilities (the hard-sampling softmax over bins); group: (N,) group index of each entry (the clip
+    of each bin). Water-filling: groups above the cap are set to exactly the cap, the removed mass goes to the
+    other groups in proportion to their mass, and groups pushed over the cap by that are capped too. Relative
+    weights inside a group are unchanged. The effective cap is max(cap, 1 / num_groups); cap <= 0, or no group
+    above the cap, returns ``h`` unchanged (bitwise).
+
+    Closed form (no iteration, no host sync): with group masses m sorted descending, total T and P_k the mass of
+    the k largest, capping those k scales the rest by s_k = (T - k cap) / (T - P_k); the solution is the first k
+    with m_k s_k <= cap (s_k does not decrease in k, so the k larger groups are indeed above the cap).
+
+    On BONES-SEED the softmax of the paper (temperature 25 over ~1M bins) put 76-96% of the hard mass on the bins
+    of a single clip for the whole run. Returns (capped h, group mass before, group mass after).
+    """
+    mass = torch.zeros(num_groups, dtype=h.dtype, device=h.device).index_add_(0, group, h)
+    if cap <= 0:
+        return h, mass, mass
+    cap = max(cap, 1.0 / num_groups)
+    m, order = torch.sort(mass, descending=True)
+    k = torch.arange(num_groups, device=h.device, dtype=h.dtype)
+    total = m.sum()
+    rest = (total - (torch.cumsum(m, 0) - m)).clamp_min(torch.finfo(h.dtype).tiny)
+    s = (total - k * cap) / rest
+    fits = m * s <= cap
+    fits[-1] = True  # with cap >= 1 / num_groups the last group always fits (guards against rounding)
+    first = torch.argmax(fits.to(torch.int32))  # number of capped groups
+    scale_sorted = torch.where(k < first, cap / m.clamp_min(torch.finfo(h.dtype).tiny), s[first])
+    scale = torch.empty_like(scale_sorted).scatter_(0, order, scale_sorted)
+    any_capped = first > 0
+    return torch.where(any_capped, h * scale[group], h), mass, torch.where(any_capped, mass * scale, mass)
+
+
 def bin_return_from_checkpoint(ck: dict, g_max: float):
     """Per-bin sampler returns of a checkpoint as completion in [0, 1]. Checkpoints from before the
     normalization stored raw discounted returns-to-go; dividing by g_max is only an approximation (their

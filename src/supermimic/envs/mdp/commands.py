@@ -29,7 +29,7 @@ from mjlab.utils.lab_api.math import (
 )
 
 from supermimic.envs.mdp.motion_library import MotionLibrary
-from supermimic.envs.mdp.sampler_math import normalized_returns_to_go
+from supermimic.envs.mdp.sampler_math import cap_group_mass, normalized_returns_to_go
 
 if TYPE_CHECKING:
     from mjlab.entity import Entity
@@ -82,7 +82,8 @@ class MultiClipMotionCommand(CommandTerm):
         self.bootstrap_fn = None  # optional: env_ids -> value estimate for truncated episodes
 
         for k in ("error_anchor_pos", "error_anchor_rot", "error_body_pos", "error_body_rot",
-                  "error_joint_pos", "error_joint_vel", "sampling_entropy", "episode_return_to_go", "hard_mass_clip_end"):
+                  "error_joint_pos", "error_joint_vel", "sampling_entropy", "episode_return_to_go", "hard_mass_clip_end",
+                  "hard_top_clip_share", "hard_eff_clips"):
             self.metrics[k] = torch.zeros(n, device=self.device)
 
     # ------------------------------------------------------------------ reference (mjlab MotionCommand API)
@@ -267,6 +268,10 @@ class MultiClipMotionCommand(CommandTerm):
         assert cfg.sampling_mode == "return"
         # Paper: softmax_b(-25 G_b / G_max); bin_return already holds G_b relative to the attainable return.
         hard = torch.softmax(-cfg.softmax_temp * self.bin_return, dim=0)
+        # Not in the paper: no clip gets more than hard_clip_cap of the hard mass (the memory term inherits it).
+        hard, clip_mass, clip_mass_capped = cap_group_mass(hard, lib.bin_clip, lib.num_clips, cfg.hard_clip_cap)
+        self.metrics["hard_top_clip_share"][:] = clip_mass.max()
+        self.metrics["hard_eff_clips"][:] = 1.0 / (clip_mass_capped * clip_mass_capped).sum()
         self.metrics["hard_mass_clip_end"][:] = (hard * lib.bin_is_clip_end).sum()
         self.bin_memory = (1 - cfg.memory_alpha) * self.bin_memory + cfg.memory_alpha * hard
         p = (
@@ -422,6 +427,10 @@ class MultiClipMotionCommandCfg(CommandTermCfg):
     hard_ratio: float = 0.4
     memory_ratio: float = 0.1
     softmax_temp: float = 25.0
+    # Largest share of the hard mass one clip may get (mirrored clips count separately); 0 = the paper's softmax
+    # alone. Not in the paper: on BONES-SEED (~1M bins) the softmax gave 76-96% of the hard mass to the bins of a
+    # single clip (one that never improved) for the whole run.
+    hard_clip_cap: float = 0.01
     g_max: float = 10.0  # largest attainable discounted return (max step reward / (1 - gamma)); normalizes bin returns
     gamma: float = 0.99
     ema_alpha: float = 0.05
