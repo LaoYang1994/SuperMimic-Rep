@@ -110,11 +110,20 @@ GAE 目标的输入）截到 ±G_max = 每步最大奖励 / (1−γ) = 10（论�
 不读回 checkpoint 的配置，用新代码续旧 run 会切到新行为。日志：`policy/policy_grad_norm` 为裁剪前范数（量级是旧 run 的
 约 32 倍）、`policy/grad_clipped`（触发比例）、`policy/critic_vH_clamped_frac`、`policy/critic_values_clamped_frac`；
 `policy/critic_value_mean` 是截断前的均值（change 2026-10-26-critic-clamp-paper-grad-clip）。
+critic 只拟合想象中仍存活的样本（ĉ_t ≥ `PolicyTrainerCfg.critic_min_survival`，默认 0.001；0 即论文 Eq. 3 的全部样本）：
+世界模型判定摔倒后 rollout 仍继续，无界的动作与外推的状态互相放大，action_rate 惩罚可到 −10¹⁷；J 按 ĉ 加权不受影响，
+但不加权的 critic 拟合会吃进这些样本（BONES-SEED 旧 run：critic loss 10¹³–inf，约 15.2 万次参数变 NaN）。已摔倒样本
+在 GAE 里按终止处理（r̂ = 0、V = 0、d̂ = 1，用替换而非乘法），输入替换为 0、损失权重为 0；`critic_value_clip` 开时 R̂ 在
+递推中逐步截到 ±G_max（论文未写）。日志：`policy/imag_dead_frac`、`policy/imag_action_abs_max`、`policy/imag_reward_min`、
+`policy/critic_loss_max`、`policy/critic_targets_clamped_frac`；critic 的估值 / 目标均值与截断比例只统计存活样本
+（change 2026-10-26-critic-alive-samples）。
 
 ### 训练循环（`training/loop.py`）
 一次"迭代"等于一次更新（世界模型 + 策略 / critic 各一次），其间按 UTD=0.4 累加采集，平均 2.5 个仿真步
 （`CONCEPTS.md#迭代与-utd`）。默认总长 320k 迭代，cosine 衰减到 0.03×，衰减区间占总长的 250k/320k；
 学习率调度只依赖迭代次数，`--schedule.max-hours` 只决定何时停止。
+tensorboard 的每个记录点是一个 log interval（默认 50 次迭代）的平均；以 `_max` / `_min` 结尾的键取区间最大 / 最小
+（NaN 传播），用于看被均值稀释的尾部（`training/metrics.py`）。
 
 ## Features
 ### LAFAN1 跟踪训练（论文 Fig. 4a 设定）

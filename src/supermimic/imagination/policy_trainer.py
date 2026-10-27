@@ -8,7 +8,7 @@ import torch
 
 from supermimic.data.replay_buffer import ReplayBuffer, StartBatch
 from supermimic.envs.mdp.motion_library import MotionLibrary
-from supermimic.imagination.objective import clamp_values, gae_targets, policy_loss, policy_objective
+from supermimic.imagination.objective import alive_mask, clamp_values, gae_targets, mask_dead, masked_mse, policy_loss, policy_objective
 from supermimic.imagination.rollout import ImagRollout, imagine
 from supermimic.policy.nets import Critic, Policy
 from supermimic.training.distributed import allreduce_grads, allreduce_max_
@@ -33,10 +33,16 @@ class PolicyTrainerCfg:
     critic_minibatches: int = 4
     use_critic: bool = True
     # Clamp critic estimates to [-g_max, g_max] where they are used (V_H in the policy objective, values in the GAE
-    # targets). Not in the paper; without it the critic over-estimates a few states late in long runs and the policy
-    # follows (BONES-SEED: values up to 36.8 > 10 after ~145k iterations, then collapse).
+    # targets), and the GAE targets themselves as the recursion goes. Not in the paper; without it the critic
+    # over-estimates a few states late in long runs and the policy follows (BONES-SEED: values up to 36.8 > 10
+    # after ~145k iterations, then collapse).
     critic_value_clip: bool = True
     g_max: float = 10.0  # largest attainable discounted return; the Trainer sets max_step_reward / (1 - gamma)
+    # The critic fits only imagined samples still alive (survival c_t >= this); dead ones count as terminated in the
+    # GAE targets (r = 0, V = 0). After a predicted fall the rollout keeps running and the unbounded actions blow up
+    # the action-rate penalty (to -1e17; critic loss 1e13 .. inf, then NaN weights at ~152k iterations). Not in the
+    # paper (Eq. 3 fits every imagined step); 0 restores that.
+    critic_min_survival: float = 0.001
     # True reproduces the upstream loss -J / H, under which the gradient clipping below never triggers.
     objective_divide_by_horizon: bool = False
     obs_noise: bool = True
@@ -44,6 +50,12 @@ class PolicyTrainerCfg:
     # still has hundreds of kernels per call, so launch overhead dominates without graphs).
     compile: str | None = "reduce-overhead"
     obs_mode: str = "proprio_only"  # config.ObsMode; the Trainer copies EnvCfg.obs_mode here
+
+
+def _masked_mean(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Mean of ``x`` over ``mask`` (bool, same shape); 0 when the mask is empty. Masked-out entries may be non-finite."""
+    m = mask.float()
+    return torch.where(mask, x, 0.0).sum() / m.sum().clamp_min(1.0)
 
 
 def fused_step(opt: torch.optim.Optimizer, skip: torch.Tensor) -> None:
@@ -126,6 +138,7 @@ class PolicyTrainer:
         gn, skipped = clip_and_step(self.opt, self.policy.parameters(), cfg.grad_clip_norm, cfg.grad_clip_value)
         self.wm.requires_grad_(True)
         self.critic.requires_grad_(True)
+        alive = alive_mask(ro.survival.detach(), cfg.critic_min_survival)  # (H+1, n)
 
         metrics = {
             "imag_objective": float(J.detach()),
@@ -137,6 +150,10 @@ class PolicyTrainer:
             "grad_clipped": float(gn > cfg.grad_clip_norm),  # non-finite gn counts too: see skipped_nonfinite
             "skipped_nonfinite": float(skipped),
             "action_abs_mean": float(ro.actions.abs().mean().detach()),
+            # Tails (means hide a single runaway sample); the loop keeps the interval max / min of *_max / *_min.
+            "imag_dead_frac": float((~alive[:-1]).float().mean()),
+            "imag_action_abs_max": float(ro.actions.detach().abs().max()),
+            "imag_reward_min": float(ro.rewards.detach().min()),
         }
         if cfg.use_critic and cfg.critic_value_clip:
             metrics["critic_vH_clamped_frac"] = float(vH_clamped)
@@ -146,47 +163,65 @@ class PolicyTrainer:
         # ---- critic: fit to GAE targets of this rollout (targets fixed) ---------------------
         if cfg.use_critic:
             with torch.no_grad():
-                feat_d, goals_d, e_root_d = feat.detach(), goals.detach(), e_root.detach()
+                # Dead samples (c_t < critic_min_survival) are not fitted. Their inputs can be huge or non-finite, so
+                # they are replaced by zeros before the critic sees them: a zero loss weight alone would still give
+                # 0 * inf = NaN.
+                a3 = alive[..., None]
+                feat_d = torch.where(a3, feat.detach(), 0.0)
+                goals_d = torch.where(a3, goals.detach(), 0.0)
+                e_root_d = torch.where(a3, e_root.detach(), 0.0)
                 H1, n, _ = feat_d.shape
                 xi_rep = xi_norm[None].expand(H1, n, -1)
                 values = self.critic(feat_d.reshape(H1 * n, -1), goals_d.reshape(H1 * n, -1), xi_rep.reshape(H1 * n, -1), e_root_d.reshape(H1 * n, -1)).reshape(H1, n)
                 values_raw = values
                 if cfg.critic_value_clip:
-                    values, values_clamped = clamp_values(values, cfg.g_max)
-                targets = gae_targets(ro.rewards.detach(), ro.dhat[1:].detach(), values, cfg.gamma, cfg.gae_lambda)  # (H, n)
+                    values, _ = clamp_values(values, cfg.g_max)
+                r_m, d_m, v_m = mask_dead(ro.rewards.detach(), ro.dhat[1:].detach(), values, alive)
+                targets = gae_targets(r_m, d_m, v_m, cfg.gamma, cfg.gae_lambda, clip=cfg.g_max if cfg.critic_value_clip else None)  # (H, n)
                 X_feat = feat_d[:-1].reshape(-1, feat_d.shape[-1])
                 X_goal = goals_d[:-1].reshape(-1, goals_d.shape[-1])
                 X_xi = xi_rep[:-1].reshape(-1, xi_rep.shape[-1])
                 X_er = e_root_d[:-1].reshape(-1, 4)
                 Y = targets.reshape(-1)
+                W = alive[:-1].reshape(-1).float()  # loss weight: 1 alive, 0 dead
                 # One host sync per update (not per minibatch). Finite inputs and targets do not guarantee finite
                 # gradients (a huge loss overflows in backward), so each minibatch also skips on a non-finite grad
                 # norm. Every critic minibatch all-reduces its gradients, so all ranks must agree: skip if any rank
-                # has non-finite inputs.
-                skip = (~torch.stack([torch.isfinite(t).all() for t in (X_feat, X_goal, X_xi, X_er, Y)]).all()).float()
+                # has non-finite inputs (dead inputs are already zeros; only alive targets count).
+                skip = (~torch.stack([torch.isfinite(t).all() for t in (X_feat, X_goal, X_xi, X_er, torch.where(W > 0, Y, 0.0))]).all()).float()
                 allreduce_max_(skip)
             metrics["critic_skipped_nonfinite"] = float(skip)
             N = Y.shape[0]
             mb = N // cfg.critic_minibatches
             last = torch.zeros((), device=Y.device)
+            loss_max = torch.zeros((), device=Y.device)
             grad_skips = torch.zeros((), device=Y.device)
             for _ in range(cfg.critic_epochs):
                 perm = torch.randperm(N, device=Y.device)
                 for i in range(cfg.critic_minibatches):
                     idx = perm[i * mb : (i + 1) * mb]
                     pred = self.critic(X_feat[idx], X_goal[idx], X_xi[idx], X_er[idx])
-                    closs = torch.nn.functional.mse_loss(pred, Y[idx])
+                    closs, empty = masked_mse(pred, Y[idx], W[idx])
                     self.critic_opt.zero_grad(set_to_none=True)
                     closs.backward()
                     allreduce_grads(self.critic)
-                    _, skipped_mb = clip_and_step(self.critic_opt, self.critic.parameters(), cfg.critic_grad_clip, extra_skip=skip)
-                    grad_skips += skipped_mb - skip  # minibatches skipped only for their gradient
+                    # A minibatch without alive samples has zero gradient, but Adam's momentum would still move the
+                    # weights: skip it, only when it is empty on every rank (all ranks step together).
+                    empty = 1.0 - allreduce_max_(1.0 - empty)
+                    batch_skip = torch.maximum(skip, empty)
+                    _, skipped_mb = clip_and_step(self.critic_opt, self.critic.parameters(), cfg.critic_grad_clip, extra_skip=batch_skip)
+                    grad_skips += skipped_mb - batch_skip  # minibatches skipped only for their gradient
                     last = closs.detach()
+                    loss_max = torch.maximum(loss_max, last)
             last = torch.where(skip > 0, torch.zeros_like(last), last)
+            loss_max = torch.where(skip > 0, torch.zeros_like(loss_max), loss_max)
             metrics["critic_loss"] = float(last)
+            metrics["critic_loss_max"] = float(loss_max)
             metrics["critic_skipped_nonfinite_grad"] = float(grad_skips) / (cfg.critic_epochs * cfg.critic_minibatches)
-            metrics["critic_value_mean"] = float(values_raw.mean())  # before clamping: over-estimation stays visible
+            # Statistics over alive samples only: dead ones carry the critic's output on zero inputs and zero targets.
+            metrics["critic_value_mean"] = float(_masked_mean(values_raw, alive))  # before clamping: over-estimation stays visible
+            metrics["critic_target_mean"] = float(_masked_mean(targets, alive[:-1]))
             if cfg.critic_value_clip:
-                metrics["critic_values_clamped_frac"] = float(values_clamped)
-            metrics["critic_target_mean"] = float(targets.mean())
+                metrics["critic_values_clamped_frac"] = float(_masked_mean((values_raw.abs() > cfg.g_max).float(), alive))
+                metrics["critic_targets_clamped_frac"] = float(_masked_mean((targets.abs() >= cfg.g_max).float(), alive[:-1]))
         return metrics

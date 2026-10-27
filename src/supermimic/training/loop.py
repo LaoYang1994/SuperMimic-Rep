@@ -20,6 +20,7 @@ from supermimic.imagination.policy_trainer import PolicyTrainer
 from supermimic.kinematics.g1_fk import G1Kinematics
 from supermimic.policy.nets import Critic, Policy, goal_layout
 from supermimic.training.distributed import allreduce_mean, broadcast_params, finalize, init_distributed, world_size
+from supermimic.training.metrics import accumulate, interval_values
 from supermimic.training.optim import load_optimizer_state
 from supermimic.training.schedule import cosine_lr, sim_steps_this_iter
 from supermimic.world_model.heads import AnalyticHeads
@@ -236,9 +237,9 @@ class Trainer:
             self.num_updates += 1
             self.iteration += 1
             for k, v in m_wm.items():
-                agg[f"wm/{k}"] = agg.get(f"wm/{k}", 0.0) + v
+                accumulate(agg, f"wm/{k}", v)
             for k, v in m_pi.items():
-                agg[f"policy/{k}"] = agg.get(f"policy/{k}", 0.0) + v
+                accumulate(agg, f"policy/{k}", v)
             agg["lr"] = lr
             agg_n += 1
 
@@ -261,8 +262,8 @@ class Trainer:
                     agg, agg_n = {}, 0
                     timers = {k: 0.0 for k in timers}
                 elif agg_n > 0:
-                    for k, v in agg.items():
-                        self.writer.add_scalar(k, v / (agg_n if k != "lr" else 1), it)
+                    for k, v in interval_values(agg, agg_n).items():
+                        self.writer.add_scalar(k, v, it)
                 if self.is_main and stats["returns"]:
                     tr = sum(stats["returns"]) / len(stats["returns"])
                     self.writer.add_scalar("train/episode_norm_return", tr, it)
