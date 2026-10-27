@@ -8,8 +8,9 @@ near that. The policy looks unaffected: policy gradient norm and imagined return
 
 ## Root cause
 The world model predicts a fall (survival ĉ_t → 0, exactly 0 once the sigmoid saturates in fp32), but the H-step
-imagined rollout keeps going. (Inferred from interval means, not observed per sample: in the spike intervals Σĉr
-stayed at its normal value while the mean r̂ was −10¹³, so the runaway samples must have ĉ ≈ 0.) Out of distribution, the unbounded policy actions and the extrapolating dynamics feed
+imagined rollout keeps going. The runaway samples are the dead ones: in a 169.6k-iteration run that masks samples with
+ĉ < 0.001, `imag_reward_min` reached −1.7×10³⁴ while the share of alive samples whose clamped target hit ±G_max stayed
+at most 4.6×10⁻⁷. Out of distribution, the unbounded policy actions and the extrapolating dynamics feed
 each other (mean |a| 1 → 10³–10⁶); the action-rate penalty is quadratic in Δa and unbounded below, so r̂ reaches −10¹⁷.
 - The policy objective Σ γᵗ ĉ_t r̂_{t+1} weights these steps by ĉ_t ≈ 0: nothing reaches the policy.
 - The critic loss of the paper (Eq. 3, Σ_t (V_t − R̂_t)²) is unweighted: it fits garbage inputs (critic output −10⁸)
@@ -36,8 +37,10 @@ not multiplication: their inputs and targets may be inf/NaN, and 0·inf = NaN (s
 ## Validation
 `tests/test_critic_alive.py`: a dead tail with −1e17 rewards, NaN values and NaN d̂ gives finite targets for the alive
 steps, equal to an episode terminated at the fall; alive samples bitwise unchanged; masked loss and gradients finite
-with inf/NaN inputs on dead samples. In training, check that `critic_loss_max` stays O(0.1) through the iterations
-where the old run spiked, while `imag_reward_min` may still show the runaway samples.
+with inf/NaN inputs on dead samples. In training (BONES-SEED, 1×RTX PRO 6000, 169.6k iterations): critic values and
+losses finite throughout, no critic update skipped, `critic_loss_max` median 0.018, while `imag_reward_min` still showed
+the runaway events (74 intervals with |a| > 100). The run without masking went NaN at ~152k; a run with only the value
+clamp crashed at 53k.
 
 ## Pitfalls
 - Clamping critic values alone (V_H, GAE inputs) does not bound the targets: the reward term r̂ is still unbounded,
@@ -45,6 +48,13 @@ where the old run spiked, while `imag_reward_min` may still show the runaway sam
 - With ε > 0, an alive sample whose next state is dead loses the bootstrap term; the bias is at most (ε/ĉ_t)·G_max, so
   keep ε small (the runaway samples have ĉ ≈ 0, a smaller ε catches them equally).
 - Every log point is an interval mean: a spike is never missed, but its size is divided by the interval length.
+- An alive sample (ĉ ≥ ε) whose state has already run away still gets a huge critic prediction: expect rare, isolated
+  `critic_loss_max` spikes (8 points > 1 in 169.6k iterations, max 75) with bounded targets. A bounded critic output
+  would remove them.
+- The policy side is not masked: a dead sample with an infinite V_H or reward gives ĉ·inf = NaN, and the whole policy
+  step is skipped by the non-finite guard (about 15 of 169.6k steps). Stopping the rollout at the fall (an absorbing
+  state) would remove both.
+- Value clamping and loss scale: [Loss scale acts only through clipping; critic values above G_max precede collapse](critic-overestimation-and-loss-scale.md).
 
 ## Related changes
 - 2026-10-26-critic-alive-samples
