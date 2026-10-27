@@ -103,6 +103,13 @@ Eq. 2 目标，再 BPTT。Critic 在 GAE(λ=0.95) 目标上训练，5 epoch × 4
 终止 + goal + 带噪观测历史）一次编译并以 CUDA Graphs 回放（`PolicyTrainerCfg.compile = "reduce-overhead"`）；
 WM 的 8 步窗口损失同样（`WMTrainerCfg.compile`）；三个优化器为 fused Adam。单卡 RTX PRO 6000 稳态
 LAFAN1 371 ms/迭代（2.70 次/s）、BONES-SEED 2.4 次/s（change 2026-10-24-training-throughput；原 1.33 / 1.2 次/s）。
+策略损失是论文 §3.3 的 −J（不除以 H），表 A.5 的裁剪（全局范数 1.0，再逐元素 0.1）因此真正起作用；上游的 −J/H 下
+梯度约小 H 倍、裁剪从不触发（Adam 对整体缩放近似不变，所以缩放只经由裁剪起作用）。critic 估值在使用处（Eq. 2 的 V_H、
+GAE 目标的输入）截到 ±G_max = 每步最大奖励 / (1−γ) = 10（论文未写；不截时长训练后期 critic 高估、策略跟随而崩溃）。
+开关：`PolicyTrainerCfg.critic_value_clip`（默认开）、`objective_divide_by_horizon`（默认关，开即上游写法）；`--resume`
+不读回 checkpoint 的配置，用新代码续旧 run 会切到新行为。日志：`policy/policy_grad_norm` 为裁剪前范数（量级是旧 run 的
+约 32 倍）、`policy/grad_clipped`（触发比例）、`policy/critic_vH_clamped_frac`、`policy/critic_values_clamped_frac`；
+`policy/critic_value_mean` 是截断前的均值（change 2026-10-26-critic-clamp-paper-grad-clip）。
 
 ### 训练循环（`training/loop.py`）
 一次"迭代"等于一次更新（世界模型 + 策略 / critic 各一次），其间按 UTD=0.4 累加采集，平均 2.5 个仿真步

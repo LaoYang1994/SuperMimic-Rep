@@ -8,7 +8,7 @@ import torch
 
 from supermimic.data.replay_buffer import ReplayBuffer, StartBatch
 from supermimic.envs.mdp.motion_library import MotionLibrary
-from supermimic.imagination.objective import gae_targets, policy_objective
+from supermimic.imagination.objective import clamp_values, gae_targets, policy_loss, policy_objective
 from supermimic.imagination.rollout import ImagRollout, imagine
 from supermimic.policy.nets import Critic, Policy
 from supermimic.training.distributed import allreduce_grads, allreduce_max_
@@ -32,6 +32,13 @@ class PolicyTrainerCfg:
     critic_epochs: int = 5
     critic_minibatches: int = 4
     use_critic: bool = True
+    # Clamp critic estimates to [-g_max, g_max] where they are used (V_H in the policy objective, values in the GAE
+    # targets). Not in the paper; without it the critic over-estimates a few states late in long runs and the policy
+    # follows (BONES-SEED: values up to 36.8 > 10 after ~145k iterations, then collapse).
+    critic_value_clip: bool = True
+    g_max: float = 10.0  # largest attainable discounted return; the Trainer sets max_step_reward / (1 - gamma)
+    # True reproduces the upstream loss -J / H, under which the gradient clipping below never triggers.
+    objective_divide_by_horizon: bool = False
     obs_noise: bool = True
     # torch.compile mode of the imagined step; "reduce-overhead" replays it as CUDA graphs (the compiled step
     # still has hundreds of kernels per call, so launch overhead dominates without graphs).
@@ -51,9 +58,11 @@ def fused_step(opt: torch.optim.Optimizer, skip: torch.Tensor) -> None:
         del opt.found_inf
 
 
-def clip_and_step(opt: torch.optim.Optimizer, params, max_norm: float, clip_value: float | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-    """Clip gradients and step, unless the total gradient norm is non-finite: then the step is skipped so one
-    NaN/Inf cannot reach the weights or the optimizer moments.
+def clip_and_step(
+    opt: torch.optim.Optimizer, params, max_norm: float, clip_value: float | None = None, extra_skip: torch.Tensor | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Clip gradients and step, unless the total gradient norm is non-finite (or ``extra_skip`` is 1): then the
+    step is skipped so one NaN/Inf cannot reach the weights or the optimizer moments.
 
     Returns (total grad norm before clipping, skipped as a 0-dim float tensor). The decision stays on the GPU.
     Gradients must already be all-reduced in data-parallel runs, so every rank takes the same decision.
@@ -63,6 +72,8 @@ def clip_and_step(opt: torch.optim.Optimizer, params, max_norm: float, clip_valu
     if clip_value is not None:
         torch.nn.utils.clip_grad_value_(params, clip_value)
     skipped = (~torch.isfinite(gn)).float()
+    if extra_skip is not None:
+        skipped = torch.maximum(skipped, extra_skip)
     fused_step(opt, skipped)
     return gn, skipped
 
@@ -103,10 +114,12 @@ class PolicyTrainer:
         feat, goals, e_root = self._critic_inputs(ro)
         if cfg.use_critic:
             v_H = self.critic(feat[-1], goals[-1], xi_norm, e_root[-1])
+            if cfg.critic_value_clip:
+                v_H, vH_clamped = clamp_values(v_H, cfg.g_max)
         else:
             v_H = None
         J = policy_objective(ro, v_H, cfg.gamma)
-        loss = -J / cfg.horizon
+        loss = policy_loss(J, cfg.horizon, cfg.objective_divide_by_horizon)
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
         allreduce_grads(self.policy)
@@ -121,9 +134,12 @@ class PolicyTrainer:
             "imag_survival_H": float(ro.survival[-1].mean().detach()),
             "imag_dhat_mean": float(ro.dhat[1:].mean().detach()),
             "policy_grad_norm": float(gn),
+            "grad_clipped": float(gn > cfg.grad_clip_norm),  # non-finite gn counts too: see skipped_nonfinite
             "skipped_nonfinite": float(skipped),
             "action_abs_mean": float(ro.actions.abs().mean().detach()),
         }
+        if cfg.use_critic and cfg.critic_value_clip:
+            metrics["critic_vH_clamped_frac"] = float(vH_clamped)
         for k, v in ro.reward_terms.items():
             metrics[f"imag_r/{k}"] = v
 
@@ -134,21 +150,26 @@ class PolicyTrainer:
                 H1, n, _ = feat_d.shape
                 xi_rep = xi_norm[None].expand(H1, n, -1)
                 values = self.critic(feat_d.reshape(H1 * n, -1), goals_d.reshape(H1 * n, -1), xi_rep.reshape(H1 * n, -1), e_root_d.reshape(H1 * n, -1)).reshape(H1, n)
+                values_raw = values
+                if cfg.critic_value_clip:
+                    values, values_clamped = clamp_values(values, cfg.g_max)
                 targets = gae_targets(ro.rewards.detach(), ro.dhat[1:].detach(), values, cfg.gamma, cfg.gae_lambda)  # (H, n)
                 X_feat = feat_d[:-1].reshape(-1, feat_d.shape[-1])
                 X_goal = goals_d[:-1].reshape(-1, goals_d.shape[-1])
                 X_xi = xi_rep[:-1].reshape(-1, xi_rep.shape[-1])
                 X_er = e_root_d[:-1].reshape(-1, 4)
                 Y = targets.reshape(-1)
-                # One host sync per update (not per minibatch): inputs and targets are detached rollout
-                # quantities, so if they are finite the clipped critic gradients are too. Every critic
-                # minibatch all-reduces its gradients, so all ranks must agree: skip if any rank is non-finite.
+                # One host sync per update (not per minibatch). Finite inputs and targets do not guarantee finite
+                # gradients (a huge loss overflows in backward), so each minibatch also skips on a non-finite grad
+                # norm. Every critic minibatch all-reduces its gradients, so all ranks must agree: skip if any rank
+                # has non-finite inputs.
                 skip = (~torch.stack([torch.isfinite(t).all() for t in (X_feat, X_goal, X_xi, X_er, Y)]).all()).float()
                 allreduce_max_(skip)
             metrics["critic_skipped_nonfinite"] = float(skip)
             N = Y.shape[0]
             mb = N // cfg.critic_minibatches
             last = torch.zeros((), device=Y.device)
+            grad_skips = torch.zeros((), device=Y.device)
             for _ in range(cfg.critic_epochs):
                 perm = torch.randperm(N, device=Y.device)
                 for i in range(cfg.critic_minibatches):
@@ -158,11 +179,14 @@ class PolicyTrainer:
                     self.critic_opt.zero_grad(set_to_none=True)
                     closs.backward()
                     allreduce_grads(self.critic)
-                    torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.critic_grad_clip)
-                    fused_step(self.critic_opt, skip)
+                    _, skipped_mb = clip_and_step(self.critic_opt, self.critic.parameters(), cfg.critic_grad_clip, extra_skip=skip)
+                    grad_skips += skipped_mb - skip  # minibatches skipped only for their gradient
                     last = closs.detach()
             last = torch.where(skip > 0, torch.zeros_like(last), last)
             metrics["critic_loss"] = float(last)
-            metrics["critic_value_mean"] = float(values.mean())
+            metrics["critic_skipped_nonfinite_grad"] = float(grad_skips) / (cfg.critic_epochs * cfg.critic_minibatches)
+            metrics["critic_value_mean"] = float(values_raw.mean())  # before clamping: over-estimation stays visible
+            if cfg.critic_value_clip:
+                metrics["critic_values_clamped_frac"] = float(values_clamped)
             metrics["critic_target_mean"] = float(targets.mean())
         return metrics

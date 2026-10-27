@@ -20,6 +20,23 @@ def policy_objective(ro: ImagRollout, terminal_values: torch.Tensor | None, gamm
     return J.mean()
 
 
+def policy_loss(J: torch.Tensor, horizon: int, divide_by_horizon: bool) -> torch.Tensor:
+    """-J as in paper §3.3, so Table A.5's clipping (global norm 1.0, then element-wise 0.1) acts on grad J.
+
+    divide_by_horizon reproduces the upstream -J / H: Adam is (up to eps) invariant to that scale, so its only
+    effect is that the gradient stays ~H times below the clipping thresholds and they never trigger.
+    """
+    return -J / horizon if divide_by_horizon else -J
+
+
+def clamp_values(v: torch.Tensor, g_max: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """Critic estimates clamped to the attainable discounted return [-g_max, g_max] (g_max = max step reward / (1 - gamma)).
+
+    Returns (clamped values, fraction of entries outside the range). Gradients pass through unclamped entries only.
+    """
+    return v.clamp(-g_max, g_max), (v.abs() > g_max).float().mean()
+
+
 @torch.no_grad()
 def gae_targets(rewards: torch.Tensor, dhat_next: torch.Tensor, values: torch.Tensor, gamma: float, lam: float) -> torch.Tensor:
     """R_t = r_{t+1} + gamma (1 - d_{t+1}) [ (1-lam) V_{t+1} + lam R_{t+1} ],  R_H = V_H.
