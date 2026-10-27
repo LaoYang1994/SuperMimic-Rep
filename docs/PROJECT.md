@@ -89,8 +89,11 @@ goal 是未来 K=10 帧参考，内容由 `EnvCfg.obs_mode` 决定（四种观�
 终止条件是骨盆高度 > 0.25 m 或倾斜 > 0.8，clip 结束按超时处理。sim context ξ 共 33 维：足底摩擦 1、
 编码器零偏 29、躯干质心偏移 3。重置按 1 s 分箱、基于回报采样：每个 bin 存"完成度"G_b（每步折现回报-to-go ÷
 从该步起可达的最大折现回报，0–1，EMA 更新），重置 = 50% 均匀 + 40% `softmax(−25·G_b)` + 10% 历史困难权重
-（见 `CONCEPTS.md#回报采样`）。日志 `sampler/bin_return_mean` 为完成度均值，`sampler/hard_mass_clip_end_bins`
-为困难份额落在 clip 末尾 bin 上的比例。
+（见 `CONCEPTS.md#回报采样`）。困难部分每个 clip（镜像单独计）最多拿 1%（`--env.hard-clip-cap`，0 即论文写法；论文未写）：
+超出的质量按比例分给其余 clip（闭式 water-filling，`sampler_math.cap_group_mass`），记忆项用截后的权重更新；BONES-SEED 上
+不截时困难质量的 76–96% 全程落在单个 clip 上（change 2026-10-27-sampler-clip-cap）。日志 `sampler/bin_return_mean` 为完成度均值，
+`sampler/hard_mass_clip_end_bins` 为困难份额落在 clip 末尾 bin 上的比例（截后），`sampler/hard_top_clip_share` 为截前份额最大的
+clip 的困难份额，`sampler/hard_eff_clips` 为截后按 clip 汇总的有效数（1/Σm²）。
 
 ### 世界模型（`world_model/`）
 状态 71 维（qpos | qvel）。动力学 MLP（2048×3）预测速度增量后做显式积分；终止头是学出来的，
