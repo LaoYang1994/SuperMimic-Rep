@@ -14,7 +14,7 @@ This repository is forked from [CuboiLeo/SuperMimic-Reproduced](https://github.c
 upstream author on RTX 5090s under the upstream protocol and are not results of this repository. Project
 documentation under `docs/` is written in Chinese.
 
-## Status (2026-10-27)
+## Status (2026-10-28)
 
 Hardware: 1× RTX PRO 6000 Blackwell 96 GB. Iteration = one update (UTD 0.4, on average 2.5 simulator steps per
 update). Return = the paper's normalized return (§4): reward sum / (0.1 × number of steps of the whole clip), evaluated
@@ -29,8 +29,8 @@ training termination condition fires.
 | BONES-SEED feasibility filter: 129,514 clips / 264.56 h | 129,511 / 263.08 h (thresholds not published; 3 clips off) | ≈ |
 | World-model 8-step prediction error 0.007–0.011 | 0.008–0.010 | ✓ |
 | LAFAN1 single-GPU return 0.82 (1.2 h on an H100) | 0.821 at 18,000 iterations (`anchor_ori_now`) | return ✓, takes longer |
-| BONES-SEED single-GPU 3 h (≈ 100k iterations) return > 0.90 | 0.939 at 104,000 iterations (0.941 at 88,000) | ✓ |
-| BONES-SEED single-GPU 3 h (≈ 100k iterations) failures 25 / 129,514 (SONIC: 179) | 58 / 129,511 at 104,000 iterations | ✗ (about 2×) |
+| BONES-SEED single-GPU 3 h (≈ 100k iterations) return > 0.90 | 0.943 at 104,000 iterations (0.943 at 88,000) | ✓ |
+| BONES-SEED single-GPU 3 h (≈ 100k iterations) failures 25 / 129,514 (SONIC: 179); Fig. A.1: 27 at 100k, about 30 at 88k | **21 / 129,511 at 104,000 iterations, 30 at 88,000** | ✓ at matched iterations (13.3 h instead of 3 h) |
 
 The paper reports times, not iteration counts. Its Fig. A.1 (failures vs. wall-clock, one point every 4,000
 iterations) has exactly 80 points on the 1-GPU curve, evenly spaced and ending at 9.37 h (the 2-GPU curve ends at
@@ -52,41 +52,61 @@ updates.
 
 ### Full BONES-SEED (129,511 clips, 263 h; `beyondmimic_seq` = paper observation setting)
 
-| Iteration | Return / failures: original reset sampler | Return / failures: corrected sampler |
-|---|---|---|
-| 36,000 | 0.929 / 413 | 0.927 / **321** |
-| 40,000 | 0.929 / 425 | 0.929 / **253** |
-| 44,000 | 0.931 / 361 | 0.934 / **210** |
-| 88,000 | – | 0.941 / 67 |
-| 104,000 | – | 0.939 / **58** |
-| 148,000 | – | 0.918 / 80 |
+| Iteration | Original reset sampler | Corrected sampler | Corrected sampler + critic fixes | + per-clip cap on the hard mass | Paper (1× H100, Fig. A.1) |
+|---|---|---|---|---|---|
+| 36,000 | 0.929 / 413 | 0.927 / 321 | – | – | – |
+| 40,000 | 0.929 / 425 | 0.929 / 253 | – | – | – |
+| 44,000 | 0.931 / 361 | 0.934 / 210 | 0.933 / 166 | 0.933 / 165 | 103 |
+| 88,000 | – | 0.941 / 67 | 0.941 / 70 | **0.943 / 30** | about 30 |
+| 104,000 | – | 0.939 / 58 | – | **0.943 / 21** | 27 at 100k |
+| 148,000 | – | 0.918 / 80 | 0.891 / 125 | (running) | 14 |
 
-After 104k the return drops (standing motions drift horizontally), while the paper keeps improving. With the critic
-fixes below, the same setting gives 0.933 / 166 at 44k and 0.941 / 70 at 88k (no difference within single-seed noise)
-and no critic divergence over 169.6k iterations; the late drop remains (0.891 / 125 at 148k).
+Return / failures, same code apart from the named change, one seed each. The four columns are successive changes, each
+compared with the previous one at the same iteration: the corrected sampler removed the clip-end artifact; the critic
+fixes made no measurable difference at 44k / 88k but removed the NaN / divergence of long runs; the per-clip cap on the
+hard-sampling mass (at most 1% per clip, see below) halved the failures from 88k on and brings them to the paper's
+level at matched iterations. Side rolls and flips went from 54/54 and 22/22 failed (original sampler, 44k) to 0 failed
+at 88k with the cap. The remaining failures at 104k are scattered (high jumps, fire-in-the-hole turns, a few lying /
+resting clips, one dance). Per-group failures (paper Table A.8) come from `scripts/eval_groups.py`.
 
-Failures concentrate on flips, side rolls, fire-in-the-hole turns, lying down / standing up, kneeling and crawling, and
-jumps; walking, running and other everyday motions almost never fail. With the corrected sampler, flips went from 54/54
-failed to about 20/54. Per-group failures (paper Table A.8) come from `scripts/eval_groups.py`.
+Without the cap the return dropped after 104k (standing motions drift horizontally) while the paper keeps improving;
+whether the cap changes that is being checked at 148k.
+
+#### Examples (104k iterations, per-clip cap run; reference motion as a translucent ghost, deterministic benchmark rollout)
+
+| Success: flip 360 | Success: side roll | Success: fire-in-the-hole 270 | Success: high jump |
+|---|---|---|---|
+| ![flip 360](docs/media/success_flip_360.gif) | ![side roll](docs/media/success_side_roll.gif) | ![fire in the hole 270](docs/media/success_fire_in_the_hole_270.gif) | ![high jump](docs/media/success_high_jump.gif) |
+
+| Failure: hook jump off wall | Failure: fire-in-the-hole 360 | Failure: high jump (another take) | Failure: faint and stand up |
+|---|---|---|---|
+| ![hook jump](docs/media/fail_hook_jump_off_wall.gif) | ![fire in the hole 360](docs/media/fail_fire_in_the_hole_360.gif) | ![high jump](docs/media/fail_high_jump.gif) | ![faint stand up](docs/media/fail_faint_stand_up_lying.gif) |
+
+All four successes failed with the previous code at the same iteration. The overlay shows the step, the running
+return per step and the two termination quantities (pelvis height error, threshold 0.25 m; tilt error, threshold 0.8);
+the clip ends when one of them fires. Rendered with `scripts/render_video.py` (GIFs are downscaled to 360 px; successes at 12 fps,
+at most 8 s; failures at 25 fps, the clip ends where the termination fires).
 
 ### Training speed (single GPU, iteration = update)
 
 | Configuration | Upstream code | This repository |
 |---|---|---|
 | LAFAN1 (4096 environments, imagination batch 4096, H = 32) | 754 ms / iteration (1.33 it/s) | **371 ms / iteration (2.70 it/s)** |
-| Full BONES-SEED | 1.2 it/s | **2.4 it/s** (paper: about 9.5 it/s on an H100, from Fig. A.1) |
+| Full BONES-SEED | 1.2 it/s | **2.2–2.4 it/s** (paper: about 9.5 it/s on an H100, from Fig. A.1); 2.7 it/s with bf16 autocast (experimental, quality check running) |
 
 Every speed-up was checked numerically on single updates, and training-level results were verified at matched
 iterations (no systematic difference from the pre-speed-up code on LAFAN1 and BONES-SEED).
 
 ### Not yet reached / next steps
 
-- BONES-SEED failures are about twice the paper's at matched iterations (44k: 166–210 vs. 103; 88k: 67–82 vs. about
-  30), mostly jumps, flips and other hard motions. The reset sampler's hard share (40% of resets) goes almost entirely
-  to a few bins of a single clip for the whole run; fixing that is the next step.
-- The return drops after about 104k iterations (horizontal drift on long standing clips); the paper's curve keeps
-  improving.
-- Training is about 4× slower per iteration than the paper's H100 numbers; TF32 / bf16 have not been tried yet.
+- At 44k iterations the failures are still 1.6× the paper's (165 vs. 103); from 88k on they match. Everything is one
+  seed; the 44k failure count varied 166–210 across four earlier runs with the same code.
+- Without the per-clip cap the return dropped after about 104k iterations (horizontal drift on long standing clips);
+  whether the cap removes that is being checked at 148k.
+- Training is about 4× slower per iteration than the paper's H100 numbers (13.3 h to 104k instead of 3 h). TF32 was
+  already on (set by mjlab); about 150 ms of each 440 ms iteration is not GPU compute. bf16 autocast of the MLP hidden
+  layers gives 2.7 it/s, but on its own it landed at the bad end of the single-seed range at 44k and 88k, so it is
+  being re-run on top of the per-clip cap before it becomes the default.
 - The paper does not give the grouping rules of Table A.8; the flips / lying / dance routine group sizes do not match.
 - The imagination vs. MuJoCo Warp throughput benchmark (paper Fig. 5a) has not been run.
 - All comparisons so far use a single seed.
@@ -125,6 +145,11 @@ iterations (no systematic difference from the pre-speed-up code on LAFAN1 and BO
 **Return-based reset sampler**: each 1 s bin's estimate is now the return-to-go divided by the largest return
 attainable from that step (a completion in [0, 1]). On 129k clips the original estimate gave 94% of the hard-sampling
 mass to clip-end bins only a few frames long, so flips, side rolls and similar motions were never practiced.
+A second, not-in-the-paper fix caps the hard-sampling mass per clip (`--env.hard-clip-cap`, default 1%, 0 = the paper's
+formula): with the paper's sharp softmax (temperature 25 over about 1M bins) one clip that never improves (return
+estimate about 0.2) took 76–96% of the hard mass for the whole run, and the motions that actually fail in the benchmark
+received 0.5% of it. The excess is redistributed proportionally (closed-form water-filling), the memory term is updated
+from the capped distribution, and two logs (`sampler/hard_top_clip_share`, `sampler/hard_eff_clips`) show the capture.
 
 **Training speed**: fused Adam (and a fix for checkpoint loading silently turning fused off), sync-free non-finite
 guards, the whole imagined step compiled into one graph and replayed with CUDA graphs, and the same for the world
