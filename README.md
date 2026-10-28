@@ -31,6 +31,7 @@ training termination condition fires.
 | LAFAN1 single-GPU return 0.82 (1.2 h on an H100) | 0.821 at 18,000 iterations (`anchor_ori_now`) | return ✓, takes longer |
 | BONES-SEED single-GPU 3 h (≈ 100k iterations) return > 0.90 | 0.943 at 104,000 iterations (0.943 at 88,000) | ✓ |
 | BONES-SEED single-GPU 3 h (≈ 100k iterations) failures 25 / 129,514 (SONIC: 179); Fig. A.1: 27 at 100k, about 30 at 88k | **21 / 129,511 at 104,000 iterations, 30 at 88,000** | ✓ at matched iterations (13.3 h instead of 3 h) |
+| BONES-SEED single-GPU failures at 148k iterations: 14 (Fig. A.1, about 4.4 h); 6 at 320k | **14 / 129,511 at 148,000 iterations** (19 h); 320k running | ✓ at matched iterations |
 
 The paper reports times, not iteration counts. Its Fig. A.1 (failures vs. wall-clock, one point every 4,000
 iterations) has exactly 80 points on the 1-GPU curve, evenly spaced and ending at 9.37 h (the 2-GPU curve ends at
