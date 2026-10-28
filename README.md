@@ -59,7 +59,7 @@ updates.
 | 44,000 | 0.931 / 361 | 0.934 / 210 | 0.933 / 166 | 0.933 / 165 | 103 |
 | 88,000 | – | 0.941 / 67 | 0.941 / 70 | **0.943 / 30** | about 30 |
 | 104,000 | – | 0.939 / 58 | – | **0.943 / 21** | 27 at 100k |
-| 148,000 | – | 0.918 / 80 | 0.891 / 125 | (running) | 14 |
+| 148,000 | – | 0.918 / 80 | 0.891 / 125 | **0.943 / 14** | 14 |
 
 Return / failures, same code apart from the named change, one seed each. The four columns are successive changes, each
 compared with the previous one at the same iteration: the corrected sampler removed the clip-end artifact; the critic
@@ -69,8 +69,10 @@ level at matched iterations. Side rolls and flips went from 54/54 and 22/22 fail
 at 88k with the cap. The remaining failures at 104k are scattered (high jumps, fire-in-the-hole turns, a few lying /
 resting clips, one dance). Per-group failures (paper Table A.8) come from `scripts/eval_groups.py`.
 
-Without the cap the return dropped after 104k (standing motions drift horizontally) while the paper keeps improving;
-whether the cap changes that is being checked at 148k.
+Without the cap the return dropped after 104k (standing motions drifted horizontally: 0.918 / 80 and 0.891 / 125 at
+148k). With the cap it does not: 0.943 / 14 at 148k, long standing clips (`body_check`) at 0.970 instead of 0.83–0.87,
+and the 14 failures match the paper's curve at the same iteration. The drop was a sampler effect (the hard mass moving
+onto one unlearnable clip), not a learner problem. The run continues to 320k (paper: 6 failures).
 
 #### Examples (104k iterations, per-clip cap run; reference motion as a translucent ghost, deterministic benchmark rollout)
 
@@ -101,8 +103,8 @@ iterations (no systematic difference from the pre-speed-up code on LAFAN1 and BO
 
 - At 44k iterations the failures are still 1.6× the paper's (165 vs. 103); from 88k on they match. Everything is one
   seed; the 44k failure count varied 166–210 across four earlier runs with the same code.
-- Without the per-clip cap the return dropped after about 104k iterations (horizontal drift on long standing clips);
-  whether the cap removes that is being checked at 148k.
+- The late return drop of earlier runs (after about 104k iterations) is gone with the per-clip cap; 148k: 0.943 / 14.
+  Still to see: 200k–320k (paper: 6 failures at 320k).
 - Training is about 4× slower per iteration than the paper's H100 numbers (13.3 h to 104k instead of 3 h). TF32 was
   already on (set by mjlab); about 150 ms of each 440 ms iteration is not GPU compute. bf16 autocast of the MLP hidden
   layers gives 2.7 it/s, but on its own it landed at the bad end of the single-seed range at 44k and 88k, so it is

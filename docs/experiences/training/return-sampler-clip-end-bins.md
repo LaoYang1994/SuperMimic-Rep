@@ -54,7 +54,9 @@ although their reset bins are "supposed" to be favored by the hard-sampling term
   70 → 30 (0.9413 → 0.9429; side rolls 9 → 0, flips 4 → 0), 104k 58 → 21 (0.9390 → 0.9433, old baseline). The
   paper reports ≈30 at 88k and 27 at 100k on one H100 (Fig. A.1). Effective clips after the cap 170–225; the
   uncapped top share stayed at 0.31–0.50 the whole time, i.e. the cap was active throughout. The cap does not
-  help at 44k; the gain appears once the previously starved groups have had enough resets.
+  help at 44k; the gain appears once the previously starved groups have had enough resets. At 148k: 14 failures /
+  0.9428 (paper: 14), long standing clips at 0.970 — the late return drop of uncapped runs (0.918 / 80 and 0.891 / 125
+  at 148k, standing clips drifting) was the capture, not the learner.
 
 ## Pitfalls
 - Reading the training-env episode return across sampler versions: a sampler that resets near clip ends gets
