@@ -10,7 +10,7 @@ an agent can find the right lesson without opening every file.
 - [Remote shell pitfalls](remote/remote-shell-pitfalls.md) — `pkill -f` over ssh kills itself; editing/syncing a running script breaks the chain
 - [Pool.imap drains its input generator](python/pool-imap-drains-generator.md) — streaming job's memory grows to the whole input
 - [MuJoCo Warp is not bitwise reproducible](sim/mujoco-warp-nondeterminism.md) — before/after benchmark comparisons need a same-code rerun as noise floor
-- [Return-based reset sampling captured by clip-end bins](training/return-sampler-clip-end-bins.md) — hard-sampling mass goes to short clip-end bins, hard motions (flips) never get practiced
+- [Return-based reset sampling captured by a few bins](training/return-sampler-clip-end-bins.md) — hard-sampling mass goes to short clip-end bins or to one unlearnable clip; attainable-return normalisation and a per-clip cap; diagnosing a training-return drop as a sampler event
 - [Imagined rollouts keep running after a predicted fall](training/imagination-dead-samples.md) — critic loss 1e13..inf and NaN weights late in long runs while the policy looks fine
 - [Loss scale acts only through clipping; critic values above G_max precede collapse](training/critic-overestimation-and-loss-scale.md) — a loss rescale "has no effect" under Adam; critic mean creeps past max_r/(1−γ) before a late collapse
 - [torch.where does not stop NaN gradients](python/torch-where-nan-gradient.md) — a "safe" branch still yields NaN gradients at singular inputs (quaternion error at zero)
